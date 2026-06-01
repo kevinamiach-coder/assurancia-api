@@ -1,10 +1,9 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 import uuid
 from datetime import datetime
-import json
 import os
 
 app = FastAPI(title="AssuranceIA API")
@@ -17,6 +16,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Pydantic models
+class ClaimCreate(BaseModel):
+    user_email: str
+    damage_type: str
+    address: str
+    description: str = ""
 
 # In-memory storage
 claims_db = {}
@@ -31,23 +37,23 @@ async def read_root():
     return {"message": "AssuranceIA API v1"}
 
 @app.post("/claims")
-def create_claim(user_email: str, damage_type: str, address: str, description: str = ""):
+def create_claim(claim: ClaimCreate):
     """Create a new insurance claim"""
     claim_id = f"CLM-{datetime.now().year}-{uuid.uuid4().hex[:6].upper()}"
     
-    claim = {
+    claim_data = {
         "claim_id": claim_id,
-        "user_email": user_email,
-        "damage_type": damage_type,
-        "address": address,
-        "description": description,
+        "user_email": claim.user_email,
+        "damage_type": claim.damage_type,
+        "address": claim.address,
+        "description": claim.description,
         "created_at": datetime.now().isoformat(),
         "photos": [],
         "analysis": None
     }
     
-    claims_db[claim_id] = claim
-    return claim
+    claims_db[claim_id] = claim_data
+    return claim_data
 
 @app.get("/claims")
 def get_claims():
@@ -94,11 +100,6 @@ def analyze_claim(claim_id: str):
     
     claim["analysis"] = analysis
     return analysis
-
-# Servir les fichiers statiques du dossier frontend
-frontend_path = os.path.join(os.path.dirname(__file__), "frontend")
-if os.path.isdir(frontend_path):
-    app.mount("/static", StaticFiles(directory=frontend_path), name="static")
 
 if __name__ == "__main__":
     import uvicorn
