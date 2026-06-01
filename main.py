@@ -1,8 +1,10 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import uuid
 from datetime import datetime
 import json
+import os
 
 app = FastAPI(title="AssuranceIA API")
 
@@ -41,6 +43,11 @@ def create_claim(user_email: str, damage_type: str, address: str, description: s
     
     claims_db[claim_id] = claim
     return claim
+
+@app.get("/claims")
+def get_claims():
+    """Get all claims"""
+    return list(claims_db.values())
 
 @app.post("/claims/{claim_id}/photos")
 async def upload_photo(claim_id: str, file: UploadFile = File(...)):
@@ -82,6 +89,10 @@ def analyze_claim(claim_id: str):
     
     claim["analysis"] = analysis
     return analysis
+
+# Servir les fichiers statiques du dossier frontend
+if os.path.isdir("frontend"):
+    app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
 
 if __name__ == "__main__":
     import uvicorn
