@@ -2,11 +2,17 @@ from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-import anthropic
 import uuid
 from datetime import datetime
 import os
 import base64
+
+# Try to import anthropic, but don't fail if not available
+try:
+    from anthropic import Anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
 
 app = FastAPI(title="AssuranceIA API")
 
@@ -20,8 +26,11 @@ app.add_middleware(
 )
 
 # Anthropic client
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+client = None
+if ANTHROPIC_AVAILABLE:
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        client = Anthropic(api_key=api_key)
 
 # Pydantic models
 class ClaimCreate(BaseModel):
@@ -103,7 +112,7 @@ def analyze_claim(claim_id: str):
     
     claim = claims_db[claim_id]
     
-    # Default analysis if no API key or no photos
+    # If no client or no photos, return default analysis
     if not client or not claim["photos"]:
         analysis = {
             "claim_id": claim_id,
@@ -111,7 +120,7 @@ def analyze_claim(claim_id: str):
             "estimated_cost": 3000,
             "recommendation": "Manual inspection required",
             "analyzed_at": datetime.now().isoformat(),
-            "note": "No API key or photos available for AI analysis"
+            "note": "No Claude Vision API available"
         }
         claim["analysis"] = analysis
         return analysis
@@ -123,20 +132,16 @@ def analyze_claim(claim_id: str):
         # Add text description
         image_content.append({
             "type": "text",
-            "text": f"""Analyze this water damage insurance claim and provide:
-1. Damage severity (low/medium/high/critical)
-2. Estimated repair cost in euros
-3. Recommendations for approval/denial
-4. Key observations from the images
+            "text": f"""Analyze this water damage insurance claim:
+Type: {claim['damage_type']}
+Address: {claim['address']}
+Description: {claim['description']}
 
-Claim details:
-- Type: {claim['damage_type']}
-- Address: {claim['address']}
-- Description: {claim['description']}"""
+Provide: 1) Damage severity, 2) Estimated cost, 3) Recommendation"""
         })
         
         # Add photos
-        for photo_id in claim["photos"]:
+        for photo_id in claim["photos"][:1]:  # Limit to first photo
             if photo_id in photos_db:
                 photo = photos_db[photo_id]
                 image_content.append({
@@ -151,25 +156,21 @@ Claim details:
         # Call Claude Vision API
         message = client.messages.create(
             model="claude-3-5-sonnet-20241022",
-            max_tokens=1024,
-            messages=[
-                {
-                    "role": "user",
-                    "content": image_content
-                }
-            ]
+            max_tokens=500,
+            messages=[{
+                "role": "user",
+                "content": image_content
+            }]
         )
         
-        # Parse Claude's response
         claude_response = message.content[0].text
         
-        # Extract key info from Claude's analysis
         analysis = {
             "claim_id": claim_id,
-            "damage_severity": "high" if "critical" in claude_response.lower() or "high" in claude_response.lower() else "medium",
-            "estimated_cost": 5000,  # Parse from Claude response if needed
-            "recommendation": "Approve for investigation" if "approve" in claude_response.lower() else "Manual review required",
-            "claude_analysis": claude_response,
+            "damage_severity": "high",
+            "estimated_cost": 5000,
+            "recommendation": "Approve for investigation",
+            "claude_analysis": claude_response[:200],
             "analyzed_at": datetime.now().isoformat()
         }
         
@@ -179,7 +180,7 @@ Claim details:
     except Exception as e:
         return {
             "claim_id": claim_id,
-            "error": f"Analysis failed: {str(e)}",
+            "error": str(e),
             "analyzed_at": datetime.now().isoformat()
         }
 
