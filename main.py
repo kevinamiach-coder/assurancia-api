@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import uuid
 from datetime import datetime
@@ -22,7 +23,11 @@ claims_db = {}
 photos_db = {}
 
 @app.get("/")
-def read_root():
+async def read_root():
+    """Serve index.html for root path"""
+    frontend_path = os.path.join(os.path.dirname(__file__), "frontend", "index.html")
+    if os.path.exists(frontend_path):
+        return FileResponse(frontend_path, media_type="text/html")
     return {"message": "AssuranceIA API v1"}
 
 @app.post("/claims")
@@ -91,8 +96,9 @@ def analyze_claim(claim_id: str):
     return analysis
 
 # Servir les fichiers statiques du dossier frontend
-if os.path.isdir("frontend"):
-    app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+frontend_path = os.path.join(os.path.dirname(__file__), "frontend")
+if os.path.isdir(frontend_path):
+    app.mount("/static", StaticFiles(directory=frontend_path), name="static")
 
 if __name__ == "__main__":
     import uvicorn
