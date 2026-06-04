@@ -154,12 +154,12 @@ Répondez UNIQUEMENT en JSON valide."""
                 ]
             }
 
-            # Call Claude API
+            # Call Claude API (with longer timeout for image analysis)
             response = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers=headers,
                 json=payload,
-                timeout=30
+                timeout=120
             )
 
             if response.status_code == 200:
