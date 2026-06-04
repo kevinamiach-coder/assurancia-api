@@ -8,11 +8,18 @@ import os
 import base64
 import json
 import requests
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 
 app = FastAPI(title="AssuranceIA API")
 
-# Get API key from environment
+# Get environment variables
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+GMAIL_EMAIL = os.getenv("GMAIL_EMAIL")
+GMAIL_PASSWORD = os.getenv("GMAIL_PASSWORD")
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,6 +36,42 @@ class ClaimCreate(BaseModel):
     description: str = ""
 
 claims_db = {}
+
+# Email function
+def send_email(to_email: str, subject: str, html_body: str, attachment_data: bytes = None, attachment_filename: str = None):
+    """Send email via Gmail SMTP"""
+    try:
+        if not GMAIL_EMAIL or not GMAIL_PASSWORD:
+            print("Gmail not configured")
+            return False
+
+        # Create message
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = GMAIL_EMAIL
+        msg["To"] = to_email
+
+        # Add HTML body
+        msg.attach(MIMEText(html_body, "html"))
+
+        # Add attachment if provided
+        if attachment_data and attachment_filename:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(attachment_data)
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f"attachment; filename= {attachment_filename}")
+            msg.attach(part)
+
+        # Send via Gmail
+        server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+        server.login(GMAIL_EMAIL, GMAIL_PASSWORD)
+        server.sendmail(GMAIL_EMAIL, to_email, msg.as_string())
+        server.quit()
+
+        return True
+    except Exception as e:
+        print(f"Email error: {str(e)}")
+        return False
 
 @app.get("/")
 async def read_root():
@@ -52,6 +95,31 @@ def create_claim(claim: ClaimCreate):
         "photos": [],
         "analysis": None
     }
+
+    # Send confirmation email
+    email_subject = f"🔍 Nouveau sinistre créé - AssuranceIA™ ({claim_id})"
+    email_body = f"""
+    <html>
+        <body style="font-family: Arial, sans-serif; color: #333;">
+            <h2>Sinistre Enregistré</h2>
+            <p><strong>Numéro de dossier :</strong> {claim_id}</p>
+            <hr>
+            <h3>Détails du sinistre</h3>
+            <ul>
+                <li><strong>Email :</strong> {claim.user_email}</li>
+                <li><strong>Adresse :</strong> {claim.address}</li>
+                <li><strong>Type de dégât :</strong> {claim.damage_type}</li>
+                <li><strong>Description :</strong> {claim.description}</li>
+                <li><strong>Date de création :</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</li>
+            </ul>
+            <hr>
+            <p>Prochaine étape : <strong>Uploadez les photos</strong> et demandez une analyse.</p>
+            <p style="color: #666; font-size: 12px;">AssuranceIA™ - Validation automatique des sinistres eau</p>
+        </body>
+    </html>
+    """
+    send_email(claim.user_email, email_subject, email_body)
+
     return claims_db[claim_id]
 
 @app.get("/claims")
@@ -193,6 +261,55 @@ Répondez UNIQUEMENT en JSON valide."""
             }
 
     claim["analysis"] = analysis
+
+    # Send analysis email with photo attachment
+    try:
+        severity_emoji = {
+            "low": "🟢",
+            "medium": "🟡",
+            "high": "🔴",
+            "critical": "⛔"
+        }.get(analysis.get("damage_severity", "unknown"), "❓")
+
+        email_subject = f"{severity_emoji} Analyse du sinistre {claim_id} - AssuranceIA™"
+
+        analysis_html = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; color: #333;">
+                <h2>📋 Résultats de l'analyse - {claim_id}</h2>
+                <hr>
+
+                <h3>📊 Analyse</h3>
+                <ul>
+                    <li><strong>Sévérité :</strong> {severity_emoji} {analysis.get('damage_severity', 'unknown').upper()}</li>
+                    <li><strong>Coût estimé :</strong> {analysis.get('estimated_cost', 'N/A')} €</li>
+                    <li><strong>Confiance :</strong> {analysis.get('confidence', 'N/A')}</li>
+                </ul>
+
+                <h3>🔍 Dégâts visibles</h3>
+                <p>{analysis.get('visible_damage', 'Aucune description disponible')}</p>
+
+                <h3>✅ Recommandation</h3>
+                <p><strong>{analysis.get('recommendation', 'Aucune recommandation')}</strong></p>
+
+                <hr>
+                <p style="color: #666; font-size: 12px;">Photo jointe en pièce jointe</p>
+                <p style="color: #666; font-size: 12px;">AssuranceIA™ - Validation automatique des sinistres eau</p>
+            </body>
+        </html>
+        """
+
+        # Attach the first photo if available
+        if claim["photos"]:
+            photo_data = claim["photos"][0]["data"]
+            photo_bytes = base64.b64decode(photo_data)
+            photo_filename = claim["photos"][0]["filename"]
+            send_email(claim["user_email"], email_subject, analysis_html, photo_bytes, photo_filename)
+        else:
+            send_email(claim["user_email"], email_subject, analysis_html)
+    except Exception as e:
+        print(f"Error sending analysis email: {str(e)}")
+
     return analysis
 
 if __name__ == "__main__":
