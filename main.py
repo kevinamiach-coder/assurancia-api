@@ -13,6 +13,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
+from supabase import create_client, Client
 
 app = FastAPI(title="AssuranceIA API")
 
@@ -20,6 +21,21 @@ app = FastAPI(title="AssuranceIA API")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 GMAIL_EMAIL = os.getenv("GMAIL_EMAIL")
 GMAIL_PASSWORD = os.getenv("GMAIL_PASSWORD")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Initialize Supabase client
+supabase: Client = None
+print(f"DEBUG: SUPABASE_URL = {SUPABASE_URL}")
+print(f"DEBUG: SUPABASE_KEY = {SUPABASE_KEY[:20] if SUPABASE_KEY else 'None'}...")
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("DEBUG: Supabase client initialized successfully ✅")
+    except Exception as e:
+        print(f"DEBUG: Supabase initialization failed: {str(e)} ❌")
+else:
+    print("DEBUG: SUPABASE_URL or SUPABASE_KEY not set ❌")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,7 +51,7 @@ class ClaimCreate(BaseModel):
     address: str
     description: str = ""
 
-claims_db = {}
+# Note: Using Supabase instead of in-memory database
 
 # Email function
 def send_email(to_email: str, subject: str, html_body: str, attachment_data: bytes = None, attachment_filename: str = None):
@@ -84,67 +100,103 @@ async def read_root():
 @app.post("/claims")
 def create_claim(claim: ClaimCreate):
     """Create claim"""
-    claim_id = f"CLM-{datetime.now().year}-{uuid.uuid4().hex[:6].upper()}"
-    claims_db[claim_id] = {
-        "claim_id": claim_id,
-        "user_email": claim.user_email,
-        "damage_type": claim.damage_type,
-        "address": claim.address,
-        "description": claim.description,
-        "created_at": datetime.now().isoformat(),
-        "photos": [],
-        "analysis": None
-    }
+    try:
+        claim_id = f"CLM-{datetime.now().year}-{uuid.uuid4().hex[:6].upper()}"
 
-    # Send confirmation email
-    email_subject = f"🔍 Nouveau sinistre créé - AssuranceIA™ ({claim_id})"
-    email_body = f"""
-    <html>
-        <body style="font-family: Arial, sans-serif; color: #333;">
-            <h2>Sinistre Enregistré</h2>
-            <p><strong>Numéro de dossier :</strong> {claim_id}</p>
-            <hr>
-            <h3>Détails du sinistre</h3>
-            <ul>
-                <li><strong>Email :</strong> {claim.user_email}</li>
-                <li><strong>Adresse :</strong> {claim.address}</li>
-                <li><strong>Type de dégât :</strong> {claim.damage_type}</li>
-                <li><strong>Description :</strong> {claim.description}</li>
-                <li><strong>Date de création :</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</li>
-            </ul>
-            <hr>
-            <p>Prochaine étape : <strong>Uploadez les photos</strong> et demandez une analyse.</p>
-            <p style="color: #666; font-size: 12px;">AssuranceIA™ - Validation automatique des sinistres eau</p>
-        </body>
-    </html>
-    """
-    send_email(claim.user_email, email_subject, email_body)
+        # Insert into Supabase
+        claim_data = {
+            "claim_id": claim_id,
+            "user_email": claim.user_email,
+            "damage_type": claim.damage_type,
+            "address": claim.address,
+            "description": claim.description,
+            "photos": [],
+            "analysis": None
+        }
 
-    return claims_db[claim_id]
+        if supabase:
+            print(f"DEBUG: Inserting claim {claim_id} into Supabase...")
+            try:
+                response = supabase.table("claims").insert(claim_data).execute()
+                print(f"DEBUG: Supabase insert response: {response}")
+                if response.data:
+                    claim_data = response.data[0]
+                    print(f"DEBUG: Claim inserted successfully ✅")
+                else:
+                    print(f"DEBUG: No data returned from insert ❌")
+            except Exception as e:
+                print(f"DEBUG: Supabase insert error: {str(e)} ❌")
+        else:
+            print(f"DEBUG: Supabase client not initialized, skipping insert")
+
+        # Send confirmation email
+        email_subject = f"🔍 Nouveau sinistre créé - AssuranceIA™ ({claim_id})"
+        email_body = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; color: #333;">
+                <h2>Sinistre Enregistré</h2>
+                <p><strong>Numéro de dossier :</strong> {claim_id}</p>
+                <hr>
+                <h3>Détails du sinistre</h3>
+                <ul>
+                    <li><strong>Email :</strong> {claim.user_email}</li>
+                    <li><strong>Adresse :</strong> {claim.address}</li>
+                    <li><strong>Type de dégât :</strong> {claim.damage_type}</li>
+                    <li><strong>Description :</strong> {claim.description}</li>
+                    <li><strong>Date de création :</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</li>
+                </ul>
+                <hr>
+                <p>Prochaine étape : <strong>Uploadez les photos</strong> et demandez une analyse.</p>
+                <p style="color: #666; font-size: 12px;">AssuranceIA™ - Validation automatique des sinistres eau</p>
+            </body>
+        </html>
+        """
+        send_email(claim.user_email, email_subject, email_body)
+
+        return claim_data
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/claims")
 def get_claims():
     """Get all claims"""
-    return list(claims_db.values())
+    try:
+        if supabase:
+            response = supabase.table("claims").select("*").execute()
+            return response.data if response.data else []
+        return []
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.post("/claims/{claim_id}/photos")
 async def upload_photo(claim_id: str, file: UploadFile = File(...)):
     """Upload photo - store as base64"""
-    if claim_id not in claims_db:
-        return {"error": "Claim not found"}
-
     try:
+        if not supabase:
+            return {"error": "Database not configured"}
+
+        # Get existing claim
+        response = supabase.table("claims").select("*").eq("claim_id", claim_id).execute()
+        if not response.data:
+            return {"error": "Claim not found"}
+
+        claim = response.data[0]
+
         # Read file content
         contents = await file.read()
         # Convert to base64
         base64_content = base64.b64encode(contents).decode('utf-8')
 
-        # Store photo with metadata
-        claims_db[claim_id]["photos"].append({
+        # Add photo to photos array
+        photos = claim.get("photos", []) or []
+        photos.append({
             "filename": file.filename,
             "content_type": file.content_type,
             "data": base64_content
         })
+
+        # Update claim in Supabase
+        supabase.table("claims").update({"photos": photos}).eq("claim_id", claim_id).execute()
 
         return {
             "status": "ok",
@@ -157,10 +209,16 @@ async def upload_photo(claim_id: str, file: UploadFile = File(...)):
 @app.post("/claims/{claim_id}/analyze")
 def analyze_claim(claim_id: str):
     """Analyze claim with Claude Vision API"""
-    if claim_id not in claims_db:
-        return {"error": "Claim not found"}
+    try:
+        if not supabase:
+            return {"error": "Database not configured"}
 
-    claim = claims_db[claim_id]
+        # Get claim from Supabase
+        response = supabase.table("claims").select("*").eq("claim_id", claim_id).execute()
+        if not response.data:
+            return {"error": "Claim not found"}
+
+        claim = response.data[0]
 
     # If no photos, return message
     if not claim["photos"]:
@@ -260,7 +318,9 @@ Répondez UNIQUEMENT en JSON valide."""
                 "recommendation": "Analyse échouée - veuillez réessayer"
             }
 
-    claim["analysis"] = analysis
+    # Update claim in Supabase with analysis results
+    if supabase:
+        supabase.table("claims").update({"analysis": analysis}).eq("claim_id", claim_id).execute()
 
     # Send analysis email with photo attachment
     try:
@@ -310,7 +370,9 @@ Répondez UNIQUEMENT en JSON valide."""
     except Exception as e:
         print(f"Error sending analysis email: {str(e)}")
 
-    return analysis
+        return analysis
+    except Exception as e:
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
