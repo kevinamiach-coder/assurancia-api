@@ -9,9 +9,6 @@ import base64
 import requests
 import json
 from supabase import create_client, Client
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 app = FastAPI(title="AssuranceIA API")
 
@@ -29,9 +26,9 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://fpddknsrhkadtethohrf.supa
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_uoos9HB_meSo8CrcEweF-g_7o2Vg1_9")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Gmail configuration
-GMAIL_EMAIL = os.environ.get("GMAIL_EMAIL", "artisanpatrimoinefrancais@gmail.com")
-GMAIL_PASSWORD = os.environ.get("GMAIL_PASSWORD", "")
+# Anthropic API configuration
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 
 # Pydantic models
 class ClaimCreate(BaseModel):
@@ -39,67 +36,6 @@ class ClaimCreate(BaseModel):
     damage_type: str
     address: str
     description: str = ""
-
-def send_email(to_email: str, claim_id: str, claim_data: dict, analysis: dict):
-    """Send email recap of claim and analysis"""
-    try:
-        if not GMAIL_PASSWORD:
-            print("Gmail password not configured")
-            return False
-        
-        # Create email
-        subject = f"AssuranceIA™ - Sinistre {claim_id} analysé"
-        
-        body = f"""
-Bonjour,
-
-Votre sinistre a été enregistré et analysé par AssuranceIA™.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 DÉTAILS DU SINISTRE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-ID: {claim_id}
-Email: {claim_data.get('user_email', '')}
-Adresse: {claim_data.get('address', '')}
-Type: {claim_data.get('damage_type', '')}
-Description: {claim_data.get('description', '')}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔍 ANALYSE IA
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Sévérité: {analysis.get('damage_severity', 'N/A')}
-Coût estimé: €{analysis.get('estimated_cost', 0)}
-Recommandation: {analysis.get('recommendation', 'N/A')}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Merci d'avoir utilisé AssuranceIA™
-https://assurancia-api-2.onrender.com/
-
-Cordialement,
-L'équipe AssuranceIA™
-"""
-        
-        # Send via Gmail SMTP
-        msg = MIMEMultipart()
-        msg['From'] = GMAIL_EMAIL
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain', 'utf-8'))
-        
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(GMAIL_EMAIL, GMAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        
-        print(f"Email sent to {to_email}")
-        return True
-    except Exception as e:
-        print(f"Email error: {str(e)}")
-        return False
 
 @app.get("/")
 async def read_root():
@@ -183,6 +119,8 @@ async def upload_photo(claim_id: str, file: UploadFile = File(...)):
             "claim_id": claim_db_id,
             "photo_url": photo_id,
             "filename": file.filename,
+            "content_base64": photo_base64,
+            "media_type": file.content_type or "image/jpeg",
         }
         
         response = supabase.table("claim_photos").insert(photo_data_db).execute()
@@ -218,14 +156,6 @@ def analyze_claim(claim_id: str):
             "analyzed_at": datetime.now().isoformat(),
             "note": "Default analysis (Claude Vision API not yet integrated)"
         }
-        
-        # Send email with analysis
-        send_email(
-            claim.get("user_email", ""),
-            claim_id,
-            claim,
-            analysis
-        )
         
         return analysis
         
