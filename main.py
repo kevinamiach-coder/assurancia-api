@@ -7,16 +7,12 @@ from datetime import datetime
 import os
 import base64
 import json
-from anthropic import Anthropic
+import requests
 
 app = FastAPI(title="AssuranceIA API")
 
-# Initialize Anthropic client
+# Get API key from environment
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-if ANTHROPIC_API_KEY:
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
-else:
-    client = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -106,18 +102,24 @@ def analyze_claim(claim_id: str):
             "recommendation": "Veuillez uploader des photos pour l'analyse"
         }
     else:
-        # Use Claude Vision API to analyze the first photo
+        # Use Claude Vision API via HTTP
         try:
-            if not client:
+            if not ANTHROPIC_API_KEY:
                 return {"error": "API key not configured"}
 
             photo = claim["photos"][0]
 
-            # Create message with vision
-            message = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=1024,
-                messages=[
+            # Prepare the request to Claude API
+            headers = {
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            }
+
+            payload = {
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 1024,
+                "messages": [
                     {
                         "role": "user",
                         "content": [
@@ -149,23 +151,39 @@ Répondez UNIQUEMENT en JSON valide."""
                             }
                         ],
                     }
-                ],
+                ]
+            }
+
+            # Call Claude API
+            response = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=payload,
+                timeout=30
             )
 
-            # Parse response
-            response_text = message.content[0].text
+            if response.status_code == 200:
+                data = response.json()
+                response_text = data["content"][0]["text"]
 
-            # Try to extract JSON from response
-            try:
-                analysis = json.loads(response_text)
-            except:
-                # If not valid JSON, create structured response
+                # Try to extract JSON from response
+                try:
+                    analysis = json.loads(response_text)
+                except:
+                    # If not valid JSON, create structured response
+                    analysis = {
+                        "damage_severity": "medium",
+                        "estimated_cost": 3000,
+                        "visible_damage": response_text,
+                        "recommendation": "Inspection manuelle requise",
+                        "confidence": "medium"
+                    }
+            else:
                 analysis = {
-                    "damage_severity": "medium",
-                    "estimated_cost": 3000,
-                    "visible_damage": response_text,
-                    "recommendation": "Inspection manuelle requise",
-                    "confidence": "medium"
+                    "error": f"API Error {response.status_code}",
+                    "damage_severity": "unknown",
+                    "recommendation": "Analyse échouée - veuillez réessayer",
+                    "details": response.text[:200]
                 }
         except Exception as e:
             analysis = {
