@@ -111,7 +111,7 @@ def analyze_claim(claim_id: str):
 
             # Prepare the request to Claude API
             headers = {
-                "x-api-key": ANTHROPIC_API_KEY,
+                "Authorization": f"Bearer {ANTHROPIC_API_KEY}",
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json"
             }
