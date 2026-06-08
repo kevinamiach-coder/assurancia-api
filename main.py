@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from fpdf import FPDF
+from anthropic import Anthropic
 import uuid
 from datetime import datetime
 import os
@@ -18,6 +19,9 @@ app = FastAPI(title="AssuranceIA API", version="2.0")
 # ----------------------------------------------------------------------------
 ANTHROPIC_API_KEY = (os.getenv("ANTHROPIC_API_KEY") or "").strip().strip('"').strip("'")
 CLAUDE_MODEL = "claude-sonnet-4-6"  # Vision model that works
+
+# Initialize Anthropic client
+client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
 # In-memory storage. NOTE: Render free tier sleeps after inactivity and wipes
 # this dict on restart. Acceptable for a demo; migrate to a real DB for prod.
@@ -121,7 +125,14 @@ def extract_json(text: str) -> dict | None:
 
 
 def call_claude_vision(photo: dict, claim: dict) -> dict:
-    """Call Claude Vision and return a structured analysis dict."""
+    """Call Claude Vision using Anthropic SDK and return a structured analysis dict."""
+    if not client:
+        return {
+            "error": "api_not_configured",
+            "damage_severity": "unknown",
+            "recommendation": "Clé API Anthropic non configurée",
+        }
+
     media_type = normalize_media_type(photo.get("content_type"))
     if media_type is None:
         return {
@@ -129,12 +140,6 @@ def call_claude_vision(photo: dict, claim: dict) -> dict:
             "damage_severity": "unknown",
             "recommendation": "Format d'image non supporte (utilisez JPEG, PNG, GIF ou WEBP).",
         }
-
-    headers = {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
 
     prompt = f"""Vous etes un expert en assurance specialise dans les degats des eaux.
 Analysez cette photo de sinistre.
@@ -158,55 +163,38 @@ Repondez UNIQUEMENT avec un objet JSON valide (aucun texte avant ou apres) avec 
   "confidence": "high | medium | low"
 }}"""
 
-    payload = {
-        "model": CLAUDE_MODEL,
-        "max_tokens": 2048,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": photo["data"],
-                        },
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ],
-    }
-
     try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers=headers,
-            json=payload,
-            timeout=120,
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=2048,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": photo["data"],
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
         )
-    except requests.RequestException as e:
+    except Exception as e:
         return {
-            "error": "network_error",
+            "error": str(type(e).__name__),
             "damage_severity": "unknown",
-            "recommendation": f"Connexion a Claude impossible: {e}",
+            "recommendation": f"Analyse echouee: {str(e)[:100]}",
         }
 
-    if response.status_code != 200:
-        return {
-            "error": f"api_error_{response.status_code}",
-            "damage_severity": "unknown",
-            "recommendation": "Analyse echouee - veuillez reessayer.",
-            "details": response.text[:300],
-        }
-
-    data = response.json()
-    response_text = data["content"][0]["text"]
+    response_text = response.content[0].text
     analysis = extract_json(response_text)
 
     if analysis is None:
-        # Could not parse: return the raw text so nothing is lost.
         return {
             "damage_severity": "medium",
             "estimated_cost_eur": 3000,

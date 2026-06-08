@@ -3,3 +3,4 @@ uvicorn==0.24.0
 python-multipart==0.0.6
 requests==2.31.0
 fpdf2==2.7.9
+anthropic==0.30.0
