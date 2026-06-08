@@ -16,7 +16,7 @@ app = FastAPI(title="AssuranceIA API", version="2.0")
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = (os.getenv("ANTHROPIC_API_KEY") or "").strip().strip('"').strip("'")
 CLAUDE_MODEL = "claude-opus-4-1-20250805"  # Latest Vision model
 
 # In-memory storage. NOTE: Render free tier sleeps after inactivity and wipes
@@ -233,10 +233,14 @@ async def read_root():
 @app.get("/health")
 def health():
     """Lightweight health check (also useful to wake the Render dyno)."""
+    key = ANTHROPIC_API_KEY or ""
     return {
         "status": "ok",
         "claims_count": len(claims_db),
-        "claude_configured": bool(ANTHROPIC_API_KEY),
+        "claude_configured": bool(key),
+        "key_length": len(key),
+        "key_prefix": key[:7] if key else None,
+        "model": CLAUDE_MODEL,
     }
 
 
