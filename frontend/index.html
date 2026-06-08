@@ -245,12 +245,20 @@
                     if (a) {
                         const score = a.fraud_score || 0;
                         const cost = a.estimated_cost_eur ?? a.estimated_cost ?? '-';
+                        let locVerif = '';
+                        if (a.location_verification) {
+                            const lv = a.location_verification;
+                            const status = lv.matches ? '✅ Match' : '⚠️ Désaccord';
+                            const dist = lv.distance_km !== null ? ` (${lv.distance_km}km)` : '';
+                            locVerif = `<div class="row"><span class="label">Géoloc EXIF</span><span>${status}${dist}</span></div>`;
+                        }
                         analysisHtml = `
                             <div class="analysis-box">
                                 <div class="row"><span class="label">Type détecté</span><span>${escapeHtml(a.detected_damage_type || '-')}</span></div>
                                 <div class="row"><span class="label">Gravité</span><span>${severityBadge(a.damage_severity)}</span></div>
                                 <div class="row"><span class="label">Coût estimé</span><span>${escapeHtml(cost)} €</span></div>
                                 <div class="row"><span class="label">Localisation fuite</span><span>${escapeHtml(a.leak_location || '-')}</span></div>
+                                ${locVerif}
                                 <div class="row" style="border:none;"><span class="label">Score fraude</span><span><b>${score}/100</b></span></div>
                                 <div class="fraud-bar"><div class="fraud-fill" style="width:${score}%; background:${fraudColor(score)};"></div></div>
                                 <div class="row"><span class="label">Cohérence</span><span>${escapeHtml(a.consistency_with_declaration || '-')}</span></div>

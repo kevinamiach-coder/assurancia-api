@@ -4,6 +4,9 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from fpdf import FPDF
 from anthropic import Anthropic
+import piexif
+from PIL import Image
+from io import BytesIO
 import uuid
 from datetime import datetime
 import os
@@ -124,6 +127,81 @@ def extract_json(text: str) -> dict | None:
     return None
 
 
+def extract_gps_from_exif(image_data: bytes) -> dict | None:
+    """Extract GPS coordinates from image EXIF metadata."""
+    try:
+        img = Image.open(BytesIO(image_data))
+        exif_dict = piexif.load(img.info.get("exif", b""))
+
+        # Extract GPS IFD
+        gps_ifd = exif_dict.get("GPS", {})
+        if not gps_ifd:
+            return None
+
+        # Parse latitude
+        lat_ref = gps_ifd.get(piexif.GPSIFD.GPSLatitudeRef, [b"N"])[0]
+        lat_data = gps_ifd.get(piexif.GPSIFD.GPSLatitude)
+        if not lat_data:
+            return None
+
+        # Parse longitude
+        lon_ref = gps_ifd.get(piexif.GPSIFD.GPSLongitudeRef, [b"E"])[0]
+        lon_data = gps_ifd.get(piexif.GPSIFD.GPSLongitude)
+        if not lon_data:
+            return None
+
+        # Convert to decimal degrees
+        def dms_to_decimal(dms_tuple, ref):
+            degrees = dms_tuple[0][0] / dms_tuple[0][1]
+            minutes = dms_tuple[1][0] / dms_tuple[1][1] / 60.0
+            seconds = dms_tuple[2][0] / dms_tuple[2][1] / 3600.0
+            decimal = degrees + minutes + seconds
+            if ref in [b"S", b"W"]:
+                decimal = -decimal
+            return decimal
+
+        latitude = dms_to_decimal(lat_data, lat_ref)
+        longitude = dms_to_decimal(lon_data, lon_ref)
+
+        return {"latitude": latitude, "longitude": longitude}
+    except Exception as e:
+        print(f"EXIF extraction error: {e}")
+        return None
+
+
+def check_gps_location_match(claim_location: dict, photo_gps: dict) -> dict:
+    """Check if photo GPS matches claim location (within ~2km tolerance)."""
+    if not claim_location or not photo_gps:
+        return {"matches": False, "distance_km": None, "flag": "NO_GPS_DATA"}
+
+    try:
+        # Haversine distance formula
+        from math import radians, cos, sin, asin, sqrt
+
+        lat1 = radians(claim_location["latitude"])
+        lon1 = radians(claim_location["longitude"])
+        lat2 = radians(photo_gps["latitude"])
+        lon2 = radians(photo_gps["longitude"])
+
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+        c = 2 * asin(sqrt(a))
+        km = 6371 * c
+
+        # Tolerance: 2km = normal GPS inaccuracy
+        matches = km <= 2.0
+
+        return {
+            "matches": matches,
+            "distance_km": round(km, 2),
+            "flag": "OK" if matches else "LOCATION_MISMATCH"
+        }
+    except Exception as e:
+        print(f"GPS match check error: {e}")
+        return {"matches": False, "distance_km": None, "flag": "ERROR"}
+
+
 def call_claude_vision(photo: dict, claim: dict) -> dict:
     """Call Claude Vision using Anthropic SDK and return a structured analysis dict."""
     if not client:
@@ -203,6 +281,18 @@ Repondez UNIQUEMENT avec un objet JSON valide (aucun texte avant ou apres) avec 
             "fraud_score": 0,
             "confidence": "low",
         }
+
+    # Check GPS location match (anti-fraud)
+    gps_check = check_gps_location_match(claim.get("location"), photo.get("gps"))
+    analysis["location_verification"] = gps_check
+
+    # Increase fraud score if location mismatch detected
+    if gps_check["flag"] == "LOCATION_MISMATCH":
+        analysis["fraud_score"] = min(100, analysis.get("fraud_score", 0) + 25)
+        if "fraud_indicators" not in analysis or not isinstance(analysis["fraud_indicators"], list):
+            analysis["fraud_indicators"] = []
+        analysis["fraud_indicators"].append(f"GEOLOCALISATION: Photo a {gps_check['distance_km']}km de l'adresse declaree")
+
     return analysis
 
 
@@ -298,19 +388,23 @@ async def upload_photo(claim_id: str, file: UploadFile = File(...)):
             detail="Format non supporte. Utilisez JPEG, PNG, GIF ou WEBP.",
         )
 
+    # Extract GPS from EXIF
+    gps_data = extract_gps_from_exif(contents)
+
     base64_content = base64.b64encode(contents).decode("utf-8")
-    claims_db[claim_id]["photos"].append(
-        {
-            "filename": file.filename,
-            "content_type": media_type,
-            "data": base64_content,
-        }
-    )
+    photo_entry = {
+        "filename": file.filename,
+        "content_type": media_type,
+        "data": base64_content,
+        "gps": gps_data,  # {latitude, longitude} or None
+    }
+    claims_db[claim_id]["photos"].append(photo_entry)
 
     return {
         "status": "ok",
         "filename": file.filename,
         "photo_count": len(claims_db[claim_id]["photos"]),
+        "gps_detected": gps_data is not None,
         "message": "Photo uploadee avec succes",
     }
 
@@ -414,6 +508,22 @@ def build_claim_pdf(claim: dict) -> bytes:
     if loc:
         field("Coordonnees", f"{loc['latitude']:.5f}, {loc['longitude']:.5f}")
     pdf.ln(3)
+
+    # Location verification (anti-fraud GPS check)
+    if len(claim.get("photos", [])) > 0:
+        photo = claim["photos"][0]
+        if photo.get("gps"):
+            section("Verification geographique (EXIF GPS)")
+            gps = photo.get("gps")
+            field("GPS photo", f"{gps['latitude']:.5f}, {gps['longitude']:.5f}")
+            analysis = claim.get("analysis")
+            if analysis and analysis.get("location_verification"):
+                loc_check = analysis["location_verification"]
+                status = "✓ MATCH" if loc_check["matches"] else "✗ DESACCORD"
+                field("Verification", status)
+                if loc_check["distance_km"] is not None:
+                    field("Distance", f"{loc_check['distance_km']} km de l'adresse declaree")
+            pdf.ln(3)
 
     # Analysis
     analysis = claim.get("analysis")
