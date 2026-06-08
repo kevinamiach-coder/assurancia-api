@@ -17,7 +17,7 @@ app = FastAPI(title="AssuranceIA API", version="2.0")
 # Configuration
 # ----------------------------------------------------------------------------
 ANTHROPIC_API_KEY = (os.getenv("ANTHROPIC_API_KEY") or "").strip().strip('"').strip("'")
-CLAUDE_MODEL = "claude-opus-4-1-20250805"  # Latest Vision model
+CLAUDE_MODEL = "claude-sonnet-4-6"  # Vision model that works
 
 # In-memory storage. NOTE: Render free tier sleeps after inactivity and wipes
 # this dict on restart. Acceptable for a demo; migrate to a real DB for prod.
