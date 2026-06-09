@@ -1338,7 +1338,7 @@ def get_declaration_form(token: str):
                     const gpsStatus = document.getElementById("gpsStatus");
 
                     if (!navigator.geolocation) {
-                        gpsStatus.innerHTML = "<span style=\"color: #fca5a5;\">❌ Géolocalisation non supportée</span>";
+                        gpsStatus.innerHTML = `<span style="color: #fca5a5;">❌ Géolocalisation non supportée</span>`;
                         return;
                     }
 
