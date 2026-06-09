@@ -16,6 +16,7 @@ import base64
 import json
 import re
 import requests
+from pymongo import MongoClient
 
 app = FastAPI(title="AssuranceIA API", version="2.0")
 
@@ -23,13 +24,20 @@ app = FastAPI(title="AssuranceIA API", version="2.0")
 # Configuration
 # ----------------------------------------------------------------------------
 ANTHROPIC_API_KEY = (os.getenv("ANTHROPIC_API_KEY") or "").strip().strip('"').strip("'")
-CLAUDE_MODEL = "claude-sonnet-4-6"  # Vision model that works
+CLAUDE_MODEL = "claude-opus-4-6"  # Vision model - using Opus for better analysis
 
 # Initialize Anthropic client
 client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
-# In-memory storage. NOTE: Render free tier sleeps after inactivity and wipes
-# this dict on restart. Acceptable for a demo; migrate to a real DB for prod.
+# MongoDB Connection
+MONGODB_URI = os.getenv("MONGODB_URI") or "mongodb+srv://artisanpatrimoinefrancais_db_user:REMOVED@cluster0.ac2vlvx.mongodb.net/?appName=Cluster0"
+mongo_client = MongoClient(MONGODB_URI)
+db = mongo_client["assurancia"]
+declaration_links_collection = db["declaration_links"]
+claims_collection = db["claims"]
+token_to_claim_collection = db["token_to_claim"]
+
+# In-memory storage (fallback for local dev). Production uses MongoDB above.
 claims_db: dict = {}
 token_to_claim: dict = {}  # Mapping: unique_token -> claim_id
 declaration_links: dict = {}  # Declaration templates: token -> {insurer_email, client_email, created_at}
