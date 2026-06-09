@@ -32,6 +32,7 @@ client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 # this dict on restart. Acceptable for a demo; migrate to a real DB for prod.
 claims_db: dict = {}
 token_to_claim: dict = {}  # Mapping: unique_token -> claim_id
+declaration_links: dict = {}  # Declaration templates: token -> {insurer_email, client_email, created_at}
 
 # Anthropic Vision API only accepts these media types.
 SUPPORTED_MEDIA_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -55,7 +56,12 @@ class ClaimCreate(BaseModel):
     address: str
     description: str
     phone_gps_lat: float | None = None  # GPS téléphone (latitude)
-    phone_gps_lon: float | None = None  # GPS téléphone (longitude) = ""
+    phone_gps_lon: float | None = None  # GPS téléphone (longitude)
+
+
+class DeclarationLinkRequest(BaseModel):
+    insurer_email: str  # Email de l'assurance/courtier
+    client_email: str | None = None  # Optional pre-filled client email
 
 
 # ----------------------------------------------------------------------------
@@ -675,25 +681,191 @@ def download_report(claim_id: str):
     )
 
 
+# ========== B2B WORKFLOW: ASSURANCE CREATES DECLARATION LINK ==========
+
+@app.post("/create-declaration-link")
+def create_declaration_link(request: DeclarationLinkRequest):
+    """
+    Assurance/Courtier creates unique declaration link for client.
+    Returns URL to send to client.
+    """
+    token = secrets.token_urlsafe(32)
+
+    declaration_links[token] = {
+        "insurer_email": request.insurer_email,
+        "client_email": request.client_email,
+        "created_at": datetime.now().isoformat(),
+        "status": "pending"  # Not yet filled by client
+    }
+
+    base_url = os.getenv("APP_URL", "https://assurancia-api-2.onrender.com")
+    declaration_url = f"{base_url}/declare/{token}"
+
+    return {
+        "token": token,
+        "declaration_url": declaration_url,
+        "insurer_email": request.insurer_email,
+        "message": f"Envoyez ce lien au client: {declaration_url}",
+        "qr_code_hint": f"QR code to generate: {declaration_url}"
+    }
+
+
 # ========== TOKEN-BASED ROUTES (for sharing with clients/insurers) ==========
 
 @app.get("/declare/{token}")
-def get_claim_by_token(token: str):
-    """Access claim by unique token (for client sharing)."""
-    if token not in token_to_claim:
-        raise HTTPException(status_code=404, detail="Lien de declaration invalide ou expiré")
+def get_declaration_form(token: str):
+    """
+    Client access: Simple declaration form.
+    If token is a pending declaration link, show form.
+    If token is an existing claim, show claim details.
+    """
+    # Check if it's a declaration link (pending)
+    if token in declaration_links:
+        link_data = declaration_links[token]
+        client_email = link_data.get("client_email", "")
 
-    claim_id = token_to_claim[token]
-    claim = claims_db.get(claim_id)
-    if not claim:
-        raise HTTPException(status_code=404, detail="Sinistre non trouvé")
+        html = f"""
+        <!DOCTYPE html>
+        <html lang="fr">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Déclaration de Sinistre - AssuranceIA™</title>
+            <style>
+                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }}
+                .container {{ max-width: 600px; margin: 0 auto; }}
+                .card {{ background: white; border-radius: 12px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }}
+                .header {{ text-align: center; margin-bottom: 30px; }}
+                .header h1 {{ color: #667eea; font-size: 2em; margin-bottom: 8px; }}
+                .header p {{ color: #666; }}
+                .form-group {{ margin-bottom: 20px; }}
+                label {{ display: block; margin-bottom: 8px; font-weight: 600; color: #333; }}
+                input, select, textarea {{ width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-family: inherit; font-size: inherit; }}
+                textarea {{ resize: vertical; min-height: 100px; }}
+                input:focus, select:focus, textarea:focus {{ outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,0.1); }}
+                button {{ width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 6px; font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.2s; }}
+                button:hover {{ transform: translateY(-2px); }}
+                .required {{ color: red; }}
+                .status {{ text-align: center; margin-bottom: 20px; padding: 12px; background: #e8f4f8; border-radius: 6px; color: #0066cc; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="card">
+                    <div class="header">
+                        <h1>🔍 Déclaration de Sinistre</h1>
+                        <p>AssuranceIA™ - Validation automatisée</p>
+                    </div>
 
-    # Return claim details without heavy base64 photos
-    light_claim = {k: v for k, v in claim.items() if k != "photos"}
-    light_claim["photo_count"] = len(claim.get("photos", []))
-    light_claim["token"] = token  # Include token for reference
+                    <div class="status">
+                        ✅ Lien de déclaration valide - Remplissez le formulaire ci-dessous
+                    </div>
 
-    return light_claim
+                    <form id="declarationForm">
+                        <div class="form-group">
+                            <label for="email">Email <span class="required">*</span></label>
+                            <input type="email" id="email" name="email" value="{client_email}" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="damageType">Type de dégât <span class="required">*</span></label>
+                            <select id="damageType" name="damageType" required>
+                                <option value="">-- Sélectionner --</option>
+                                <optgroup label="💧 Dégâts des Eaux">
+                                    <option value="fuite">Fuite d'eau</option>
+                                    <option value="inondation">Inondation</option>
+                                    <option value="rupture_canalisation">Rupture de canalisation</option>
+                                    <option value="infiltration_toiture">Infiltration toiture</option>
+                                </optgroup>
+                                <optgroup label="🚗 Sinistres Automobile">
+                                    <option value="accident_circulation">Accident de circulation</option>
+                                    <option value="vandalisme_auto">Vandalisme/Rayures</option>
+                                </optgroup>
+                                <optgroup label="🔓 Cambriolage">
+                                    <option value="effraction">Effraction/Intrusion</option>
+                                    <option value="vol">Vol/Cambriolage</option>
+                                </optgroup>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="address">Adresse du sinistre <span class="required">*</span></label>
+                            <input type="text" id="address" name="address" placeholder="12 Rue de Rivoli, 75001 Paris" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="description">Description des dégâts <span class="required">*</span></label>
+                            <textarea id="description" name="description" placeholder="Décrivez les dégâts constatés..." required></textarea>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="photos">Photos (optionnel)</label>
+                            <input type="file" id="photos" name="photos" multiple accept="image/*">
+                        </div>
+
+                        <button type="submit">📤 Soumettre la déclaration</button>
+                    </form>
+
+                    <div id="status" style="margin-top: 20px; text-align: center; display: none;"></div>
+                </div>
+            </div>
+
+            <script>
+                const token = '{token}';
+                const apiUrl = window.location.origin;
+
+                document.getElementById('declarationForm').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+
+                    const formData = new FormData();
+                    formData.append('user_email', document.getElementById('email').value);
+                    formData.append('damage_type', document.getElementById('damageType').value);
+                    formData.append('address', document.getElementById('address').value);
+                    formData.append('description', document.getElementById('description').value);
+                    formData.append('token', token);
+
+                    try {{
+                        const response = await fetch(`${{apiUrl}}/declare/${{token}}/submit`, {{
+                            method: 'POST',
+                            body: formData
+                        }});
+
+                        const data = await response.json();
+
+                        if (response.ok) {{
+                            document.getElementById('status').style.display = 'block';
+                            document.getElementById('status').innerHTML = `
+                                <div style="color: green; padding: 15px; background: #e8f5e9; border-radius: 6px;">
+                                    <h3>✅ Sinistre déclaré avec succès!</h3>
+                                    <p>Référence: ${{data.claim_id}}</p>
+                                    <p>Vous recevrez le rapport d'analyse par email.</p>
+                                </div>
+                            `;
+                            document.getElementById('declarationForm').style.display = 'none';
+                        }} else {{
+                            alert('Erreur: ' + data.detail);
+                        }}
+                    }} catch (err) {{
+                        alert('Erreur réseau: ' + err.message);
+                    }}
+                }});
+            </script>
+        </body>
+        </html>
+        """
+        return Response(content=html, media_type="text/html")
+
+    # If token is an existing claim, show claim details
+    if token in token_to_claim:
+        claim_id = token_to_claim[token]
+        claim = claims_db.get(claim_id)
+        if claim:
+            light_claim = {k: v for k, v in claim.items() if k != "photos"}
+            light_claim["photo_count"] = len(claim.get("photos", []))
+            return light_claim
+
+    raise HTTPException(status_code=404, detail="Lien de déclaration invalide ou expiré")
 
 
 @app.get("/report/{token}")
@@ -751,6 +923,57 @@ def send_claim_links(claim_id: str):
                 "body": f"Rapport disponible: {base_url}/report/{token}"
             }
         }
+    }
+
+
+@app.post("/declare/{token}/submit")
+async def submit_declaration(token: str, user_email: str = "", damage_type: str = "", address: str = "", description: str = ""):
+    """
+    Client submits declaration via token link.
+    Creates claim + stores insurer email for auto PDF sending.
+    """
+    if token not in declaration_links:
+        raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
+
+    link_data = declaration_links[token]
+    insurer_email = link_data["insurer_email"]
+
+    # Create claim
+    claim_id = f"CLM-{datetime.now().year}-{uuid.uuid4().hex[:6].upper()}"
+    unique_token = secrets.token_urlsafe(32)
+
+    location = geocode_address(address)
+    fraud_history = check_fraud_history(user_email, address)
+
+    claim_data = {
+        "claim_id": claim_id,
+        "unique_token": unique_token,
+        "user_email": user_email,
+        "damage_type": damage_type,
+        "address": address,
+        "description": description,
+        "location": location,
+        "phone_gps": None,
+        "gps_verification": None,
+        "fraud_history": fraud_history,
+        "insurer_email": insurer_email,  # Store for auto PDF sending
+        "photos": [],
+        "analysis": None,
+        "status": "open",
+        "created_at": datetime.now().isoformat(),
+    }
+
+    claims_db[claim_id] = claim_data
+    token_to_claim[unique_token] = claim_id
+    declaration_links[token]["status"] = "completed"
+    declaration_links[token]["claim_id"] = claim_id
+
+    return {
+        "claim_id": claim_id,
+        "unique_token": unique_token,
+        "message": "✅ Sinistre créé. Uploadez les photos pour lancer l'analyse automatique.",
+        "next_step": f"Uploadez photos via POST /claims/{claim_id}/photos",
+        "insurer_will_receive": f"PDF sera envoyé à {insurer_email} après analyse"
     }
 
 
