@@ -119,10 +119,73 @@
                             <label for="damageType">Type de dégât</label>
                             <select id="damageType" required>
                                 <option value="">-- Sélectionner --</option>
-                                <option value="fuite">Fuite d'eau</option>
-                                <option value="inondation">Inondation</option>
-                                <option value="rupture_canalisation">Rupture de canalisation</option>
-                                <option value="infiltration_toiture">Infiltration toiture</option>
+
+                                <optgroup label="💧 Dégâts des Eaux">
+                                    <option value="fuite">Fuite d'eau</option>
+                                    <option value="inondation">Inondation</option>
+                                    <option value="rupture_canalisation">Rupture de canalisation</option>
+                                    <option value="infiltration_toiture">Infiltration toiture</option>
+                                    <option value="degat_humidite">Dégât d'humidité</option>
+                                </optgroup>
+
+                                <optgroup label="🏚️ Dégâts Bâtiment">
+                                    <option value="toiture_endommagee">Toiture endommagée</option>
+                                    <option value="facade_endommagee">Façade endommagée</option>
+                                    <option value="mur_crevasse">Mur fissuré/crévassé</option>
+                                    <option value="affaissement">Affaissement de dalle</option>
+                                </optgroup>
+
+                                <optgroup label="🪟 Vitrages & Menuiseries">
+                                    <option value="vitre_cassee">Vitre cassée</option>
+                                    <option value="porte_cassee">Porte cassée</option>
+                                    <option value="fenetre_endommagee">Fenêtre endommagée</option>
+                                    <option value="miroir_casse">Miroir cassé</option>
+                                </optgroup>
+
+                                <optgroup label="🔓 Cambriolage & Effraction">
+                                    <option value="effraction">Effraction/Intrusion</option>
+                                    <option value="serrure_forcee">Serrure forcée</option>
+                                    <option value="vol">Vol/Cambriolage</option>
+                                    <option value="dommages_effraction">Dommages causés par effraction</option>
+                                </optgroup>
+
+                                <optgroup label="🔥 Incendie & Sinistres">
+                                    <option value="incendie">Incendie/Brûlure</option>
+                                    <option value="explosion">Explosion</option>
+                                    <option value="fumee">Dégâts de fumée</option>
+                                    <option value="etincelles">Brûlures par étincelles</option>
+                                </optgroup>
+
+                                <optgroup label="⛈️ Intempéries">
+                                    <option value="grele">Dégâts de grêle</option>
+                                    <option value="tempete">Dégâts de tempête/vent</option>
+                                    <option value="neige">Dégâts de neige</option>
+                                    <option value="foudre">Dégâts de foudre</option>
+                                </optgroup>
+
+                                <optgroup label="🚗 Sinistres Automobile">
+                                    <option value="accident_circulation">Accident de circulation</option>
+                                    <option value="collision_frontale">Collision frontale</option>
+                                    <option value="collision_laterale">Collision latérale</option>
+                                    <option value="collision_arriere">Collision arrière</option>
+                                    <option value="choc_fixe">Choc contre objet fixe</option>
+                                    <option value="tonneau">Tonneau/Retournement</option>
+                                    <option value="sortie_route">Sortie de route</option>
+                                    <option value="aquaplaning">Aquaplaning</option>
+                                    <option value="vandalisme_auto">Vandalisme/Rayures</option>
+                                    <option value="vol_auto">Vol/Tentative de vol</option>
+                                    <option value="vitres_brisees_auto">Vitres brisées (voiture)</option>
+                                    <option value="degat_grele_auto">Dégâts de grêle (voiture)</option>
+                                    <option value="incendie_auto">Incendie (voiture)</option>
+                                    <option value="dommages_moteur">Dommages moteur</option>
+                                </optgroup>
+
+                                <optgroup label="🦠 Autres">
+                                    <option value="moisissure">Moisissure</option>
+                                    <option value="dommages_electriques">Dommages électriques</option>
+                                    <option value="bris_machines">Bris de machines</option>
+                                    <option value="autre">Autre</option>
+                                </optgroup>
                             </select>
                         </div>
                         <div class="form-group">
