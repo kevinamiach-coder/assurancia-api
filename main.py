@@ -718,6 +718,181 @@ def create_declaration_link(request: DeclarationLinkRequest):
     }
 
 
+# ========== DASHBOARD ROUTE ==========
+
+@app.get("/dashboard")
+async def dashboard():
+    """Dashboard to view all claims from MongoDB."""
+    try:
+        claims_list = list(claims_collection.find({}, {"_id": 0}).sort("created_at", -1))
+    except:
+        claims_list = []
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>AssuranceIA™ Dashboard</title>
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+                color: #e2e8f0;
+                padding: 40px 20px;
+                min-height: 100vh;
+            }}
+            .container {{
+                max-width: 1400px;
+                margin: 0 auto;
+            }}
+            header {{
+                margin-bottom: 40px;
+            }}
+            h1 {{
+                font-size: 36px;
+                background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                margin-bottom: 10px;
+            }}
+            p {{
+                color: #cbd5e1;
+                font-size: 16px;
+            }}
+            .table-container {{
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.9) 0%, rgba(51, 65, 85, 0.9) 100%);
+                border: 1px solid rgba(148, 163, 184, 0.2);
+                border-radius: 12px;
+                overflow: hidden;
+                backdrop-filter: blur(10px);
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+            }}
+            th {{
+                background: rgba(59, 130, 246, 0.1);
+                padding: 16px;
+                text-align: left;
+                font-weight: 600;
+                border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+                color: #60a5fa;
+            }}
+            td {{
+                padding: 16px;
+                border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+            }}
+            tr:hover {{
+                background: rgba(59, 130, 246, 0.05);
+            }}
+            .reference {{
+                color: #60a5fa;
+                font-weight: 600;
+            }}
+            .status {{
+                display: inline-block;
+                padding: 4px 12px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            .status.low {{
+                background: rgba(34, 197, 94, 0.2);
+                color: #86efac;
+            }}
+            .status.medium {{
+                background: rgba(248, 113, 113, 0.2);
+                color: #fca5a5;
+            }}
+            .status.high {{
+                background: rgba(239, 68, 68, 0.2);
+                color: #fca5a5;
+            }}
+            .empty {{
+                text-align: center;
+                padding: 60px 20px;
+                color: #94a3b8;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>🔐 AssuranceIA™ Dashboard</h1>
+                <p>Tous les sinistres déclarés et analysés</p>
+            </header>
+
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Référence</th>
+                            <th>Email</th>
+                            <th>Type</th>
+                            <th>Adresse</th>
+                            <th>Fraude</th>
+                            <th>Date</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+    """
+
+    if claims_list:
+        for claim in claims_list:
+            ref = claim.get("claim_id", "N/A")
+            email = claim.get("user_email", "N/A")
+            damage = claim.get("damage_type", "N/A")
+            address = claim.get("address", "N/A")
+            fraud_score = claim.get("fraud_score", 0)
+            created = claim.get("created_at", "N/A")[:10]
+
+            # Fraud status badge
+            if fraud_score < 20:
+                status = '<span class="status low">✓ Fiable</span>'
+            elif fraud_score < 60:
+                status = '<span class="status medium">⚠ Attention</span>'
+            else:
+                status = '<span class="status high">🚨 Suspect</span>'
+
+            html += f"""
+                        <tr>
+                            <td class="reference">{ref}</td>
+                            <td>{email}</td>
+                            <td>{damage}</td>
+                            <td>{address[:40]}...</td>
+                            <td>{status} ({fraud_score})</td>
+                            <td>{created}</td>
+                        </tr>
+            """
+    else:
+        html += """
+                        <tr>
+                            <td colspan="6" class="empty">
+                                <p>Aucun sinistre déclaré pour le moment</p>
+                            </td>
+                        </tr>
+        """
+
+    html += """
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    return Response(content=html, media_type="text/html")
+
+
 # ========== TOKEN-BASED ROUTES (for sharing with clients/insurers) ==========
 
 @app.get("/")
