@@ -716,7 +716,7 @@ def download_report_by_token(token: str):
     )
 
 
-@app.post("/claims/{claim_id}/send-links")
+@app.get("/claims/{claim_id}/send-links")
 def send_claim_links(claim_id: str):
     """Generate and return shareable links for claim (PDF ready to send to client + insurer)."""
     if claim_id not in claims_db:
