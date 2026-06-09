@@ -1335,100 +1335,82 @@ def get_declaration_form(token: str):
             </div>
 
             <script>
-                const token = '{token}';
-                const apiUrl = window.location.origin;
-                let currentGPS = null;
+            const token = '{token}';
+            const apiUrl = window.location.origin;
+            let currentGPS = null;
 
-                // GPS Capture Button
-                document.getElementById("gpsBtn").addEventListener("click", (e) => {
-                    e.preventDefault();
-                    const gpsBtn = document.getElementById("gpsBtn");
-                    const gpsStatus = document.getElementById("gpsStatus");
+            document.getElementById("gpsBtn").addEventListener("click", function(e) {
+                e.preventDefault();
+                const gpsBtn = document.getElementById("gpsBtn");
+                const gpsStatus = document.getElementById("gpsStatus");
 
-                    if (!navigator.geolocation) {
-                        gpsStatus.innerHTML = `<span style="color: #fca5a5;">❌ Géolocalisation non supportée</span>`;
-                        return;
-                    }
+                if (!navigator.geolocation) {
+                    gpsStatus.innerHTML = '<span style="color: #fca5a5;">Geolocalisation non supportee</span>';
+                    return;
+                }
 
-                    gpsBtn.disabled = true;
-                    gpsBtn.textContent = "⏳ Localisation...";
-                    gpsStatus.innerHTML = "";
+                gpsBtn.disabled = true;
+                gpsBtn.textContent = "Localisation...";
+                gpsStatus.innerHTML = "";
 
-                    navigator.geolocation.getCurrentPosition(
-                        (position) => {
-                            currentGPS = {
-                                lat: position.coords.latitude,
-                                lon: position.coords.longitude
-                            };
-                            document.getElementById("gpsLat").value = currentGPS.lat;
-                            document.getElementById("gpsLon").value = currentGPS.lon;
+                navigator.geolocation.getCurrentPosition(function(position) {
+                    currentGPS = {
+                        lat: position.coords.latitude,
+                        lon: position.coords.longitude
+                    };
+                    document.getElementById("gpsLat").value = currentGPS.lat;
+                    document.getElementById("gpsLon").value = currentGPS.lon;
 
-                            const lat = currentGPS.lat.toFixed(5);
-                            const lon = currentGPS.lon.toFixed(5);
-                            const acc = Math.round(position.coords.accuracy);
+                    const lat = currentGPS.lat.toFixed(5);
+                    const lon = currentGPS.lon.toFixed(5);
+                    const acc = Math.round(position.coords.accuracy);
 
-                            gpsBtn.textContent = `✅ GPS: ${lat}, ${lon}`;
-                            gpsStatus.innerHTML = `<span style="color: #86efac;">✓ Précision: ±${acc}m</span>`;
-                            gpsBtn.disabled = false;
-                        },
-                        (error) => {
-                            gpsStatus.innerHTML = `<span style="color: #fca5a5;">❌ Erreur: ${error.message}</span>`;
-                            gpsBtn.textContent = "📍 Capturer mon GPS";
-                            gpsBtn.disabled = false;
-                        },
-                        { enableHighAccuracy: true, timeout: 10000 }
-                    );
-                });
+                    gpsBtn.textContent = "GPS: " + lat + ", " + lon;
+                    gpsStatus.innerHTML = '<span style="color: #86efac;">Position: +/-' + acc + 'm</span>';
+                    gpsBtn.disabled = false;
+                }, function(error) {
+                    gpsStatus.innerHTML = '<span style="color: #fca5a5;">Erreur: ' + error.message + '</span>';
+                    gpsBtn.textContent = "Capturer mon GPS";
+                    gpsBtn.disabled = false;
+                }, { enableHighAccuracy: true, timeout: 10000 });
+            });
 
-                // Form Submission
-                document.getElementById("declarationForm").addEventListener("submit", async (e) => {
-                    e.preventDefault();
+            document.getElementById("declarationForm").addEventListener("submit", function(e) {
+                e.preventDefault();
 
-                    if (!currentGPS) {
-                        alert("❌ GPS OBLIGATOIRE!\n\nCliquez sur le bouton GPS et approuvez l'accès à votre localisation.");
-                        return;
-                    }
+                if (!currentGPS) {
+                    alert("GPS OBLIGATOIRE!");
+                    return;
+                }
 
-                    const formData = new FormData();
-                    formData.append("user_email", document.getElementById("email").value);
-                    formData.append("damage_type", document.getElementById("damageType").value);
-                    formData.append("address", document.getElementById("address").value);
-                    formData.append("description", document.getElementById("description").value);
-                    formData.append("phone_gps_lat", currentGPS.lat);
-                    formData.append("phone_gps_lon", currentGPS.lon);
-                    formData.append("token", token);
+                const formData = new FormData();
+                formData.append("user_email", document.getElementById("email").value);
+                formData.append("damage_type", document.getElementById("damageType").value);
+                formData.append("address", document.getElementById("address").value);
+                formData.append("description", document.getElementById("description").value);
+                formData.append("phone_gps_lat", currentGPS.lat);
+                formData.append("phone_gps_lon", currentGPS.lon);
+                formData.append("token", token);
 
-                    try {
-                        const response = await fetch(`${apiUrl}/declare/${token}/submit`, {
-                            method: "POST",
-                            body: formData
-                        });
-
-                        const data = await response.json();
-
-                        if (response.ok) {
-                            const statusDiv = document.getElementById("status");
-                            statusDiv.className = "success-message";
-                            statusDiv.style.display = "block";
-                            statusDiv.innerHTML = `
-                                <h3 style="margin-bottom: 10px;">✅ Sinistre déclaré avec succès!</h3>
-                                <p style="margin: 5px 0;"><strong>Référence:</strong> ${data.claim_id}</p>
-                                <p style="margin: 5px 0;">Vous recevrez le rapport d'analyse par email sous peu.</p>
-                            `;
-                            document.getElementById("declarationForm").style.display = "none";
-                        } else {
-                            const statusDiv = document.getElementById("status");
-                            statusDiv.className = "error-message";
-                            statusDiv.style.display = "block";
-                            statusDiv.innerHTML = `<strong>❌ Erreur:</strong> ${data.detail || "Une erreur est survenue"}`;
-                        }
-                    } catch (err) {
+                fetch(apiUrl + "/declare/" + token + "/submit", {
+                    method: "POST",
+                    body: formData
+                }).then(function(response) {
+                    return response.json();
+                }).then(function(data) {
+                    if (data.claim_id) {
                         const statusDiv = document.getElementById("status");
-                        statusDiv.className = "error-message";
+                        statusDiv.className = "success-message";
                         statusDiv.style.display = "block";
-                        statusDiv.innerHTML = `<strong>❌ Erreur réseau:</strong> ${err.message}`;
+                        statusDiv.innerHTML = "<h3>Sinistre declare!</h3><p>Reference: " + data.claim_id + "</p>";
+                        document.getElementById("declarationForm").style.display = "none";
+                    } else {
+                        alert("Erreur");
                     }
+                }).catch(function(err) {
+                    alert("Erreur reseau");
                 });
+            });
             </script>
         </body>
         </html>
