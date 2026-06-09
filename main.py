@@ -1668,10 +1668,19 @@ def get_declaration_form(token: str):
 @app.get("/claim/{claim_id}")
 def view_claim_details(claim_id: str):
     """View complete claim details with photos, analysis, GPS map, and fraud score."""
-    if claim_id not in claims_db:
+    # Try MongoDB first, then fall back to in-memory
+    claim = None
+    try:
+        claim = claims_collection.find_one({"claim_id": claim_id})
+    except:
+        pass
+
+    if not claim:
+        claim = claims_db.get(claim_id)
+
+    if not claim:
         raise HTTPException(status_code=404, detail="Sinistre non trouvé")
 
-    claim = claims_db[claim_id]
     phone_gps = claim.get("phone_gps", {})
     gps_lat = phone_gps.get("latitude", "N/A") if phone_gps else "N/A"
     gps_lon = phone_gps.get("longitude", "N/A") if phone_gps else "N/A"
