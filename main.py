@@ -815,7 +815,7 @@ def get_declaration_form(token: str):
                 const token = '{token}';
                 const apiUrl = window.location.origin;
 
-                document.getElementById('declarationForm').addEventListener('submit', async (e) => {
+                document.getElementById('declarationForm').addEventListener('submit', async (e) => {{
                     e.preventDefault();
 
                     const formData = new FormData();
