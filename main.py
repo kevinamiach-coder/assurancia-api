@@ -712,13 +712,322 @@ def create_declaration_link(request: DeclarationLinkRequest):
 
 # ========== TOKEN-BASED ROUTES (for sharing with clients/insurers) ==========
 
+@app.get("/")
+async def landing_page():
+    """Beautiful landing page for AssuranceIA™."""
+    html = """
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>AssuranceIA™ - Validation Sinistres Intelligente</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+                color: #e2e8f0;
+                line-height: 1.6;
+                min-height: 100vh;
+            }
+
+            header {
+                padding: 20px 40px;
+                backdrop-filter: blur(10px);
+                background: rgba(15, 23, 42, 0.8);
+                border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+                position: sticky;
+                top: 0;
+                z-index: 100;
+            }
+
+            .logo {
+                font-size: 28px;
+                font-weight: 800;
+                background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+
+            .hero {
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 100px 40px;
+                text-align: center;
+            }
+
+            .hero h1 {
+                font-size: 56px;
+                margin-bottom: 20px;
+                background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #ec4899 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                font-weight: 900;
+            }
+
+            .hero p {
+                font-size: 20px;
+                color: #cbd5e1;
+                margin-bottom: 40px;
+                max-width: 600px;
+                margin-left: auto;
+                margin-right: auto;
+            }
+
+            .hero-cta {
+                display: inline-block;
+                background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                color: white;
+                padding: 16px 40px;
+                border-radius: 12px;
+                font-size: 18px;
+                font-weight: 600;
+                text-decoration: none;
+                transition: all 0.3s ease;
+                box-shadow: 0 10px 30px rgba(59, 130, 246, 0.3);
+            }
+
+            .hero-cta:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 15px 40px rgba(59, 130, 246, 0.4);
+            }
+
+            .features {
+                max-width: 1200px;
+                margin: 80px auto;
+                padding: 0 40px;
+            }
+
+            .features h2 {
+                text-align: center;
+                font-size: 40px;
+                margin-bottom: 50px;
+                background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+
+            .feature-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                gap: 30px;
+                margin-bottom: 80px;
+            }
+
+            .feature-card {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.8) 0%, rgba(51, 65, 85, 0.8) 100%);
+                border: 1px solid rgba(148, 163, 184, 0.2);
+                border-radius: 12px;
+                padding: 30px;
+                backdrop-filter: blur(10px);
+                transition: all 0.3s ease;
+            }
+
+            .feature-card:hover {
+                transform: translateY(-5px);
+                border-color: rgba(59, 130, 246, 0.5);
+                background: linear-gradient(135deg, rgba(30, 41, 59, 1) 0%, rgba(51, 65, 85, 1) 100%);
+            }
+
+            .feature-icon {
+                font-size: 40px;
+                margin-bottom: 15px;
+            }
+
+            .feature-card h3 {
+                font-size: 22px;
+                margin-bottom: 10px;
+                color: #f1f5f9;
+            }
+
+            .feature-card p {
+                color: #cbd5e1;
+                font-size: 16px;
+            }
+
+            .process {
+                max-width: 1200px;
+                margin: 80px auto;
+                padding: 0 40px;
+            }
+
+            .process h2 {
+                text-align: center;
+                font-size: 40px;
+                margin-bottom: 50px;
+                background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+
+            .process-steps {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 20px;
+            }
+
+            .step {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.8) 0%, rgba(51, 65, 85, 0.8) 100%);
+                border: 2px solid rgba(59, 130, 246, 0.3);
+                border-radius: 12px;
+                padding: 25px;
+                text-align: center;
+            }
+
+            .step-number {
+                display: inline-block;
+                width: 50px;
+                height: 50px;
+                background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                color: white;
+                border-radius: 50%;
+                line-height: 50px;
+                font-weight: bold;
+                font-size: 22px;
+                margin-bottom: 15px;
+            }
+
+            .step h3 {
+                font-size: 18px;
+                margin-bottom: 10px;
+            }
+
+            .step p {
+                color: #cbd5e1;
+                font-size: 14px;
+            }
+
+            footer {
+                text-align: center;
+                padding: 40px;
+                color: #64748b;
+                border-top: 1px solid rgba(148, 163, 184, 0.1);
+                margin-top: 80px;
+            }
+
+            @media (max-width: 768px) {
+                .hero h1 {
+                    font-size: 36px;
+                }
+
+                .hero p {
+                    font-size: 16px;
+                }
+
+                header {
+                    padding: 15px 20px;
+                }
+
+                .hero {
+                    padding: 50px 20px;
+                }
+
+                .features, .process {
+                    padding: 0 20px;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <div class="logo">🔐 AssuranceIA™</div>
+        </header>
+
+        <div class="hero">
+            <h1>Validation Sinistres Intelligente</h1>
+            <p>Analysez automatiquement les sinistres dégâts eaux avec l'IA et la géolocalisation anti-fraude</p>
+            <a href="#declare" class="hero-cta">🚀 Déclarer un sinistre</a>
+        </div>
+
+        <div class="features">
+            <h2>Pourquoi AssuranceIA™?</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🤖</div>
+                    <h3>IA Vision Avancée</h3>
+                    <p>Analyse automatique des photos de sinistre avec Claude Vision pour une évaluation précise des dégâts</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📍</div>
+                    <h3>Géolocalisation Anti-Fraude</h3>
+                    <p>Vérification GPS des coordonnées photos vs adresse déclarée (2km tolérance) - impossible à falsifier</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">⚡</div>
+                    <h3>Traitement Ultra-Rapide</h3>
+                    <p>Analyse complète et génération de rapport PDF en moins de 2 minutes</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🛡️</div>
+                    <h3>Détection Fraude Multicouche</h3>
+                    <p>Scoring de fraude avec multiples vérifications: GPS, EXIF, IA photos, historique sinistres</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📱</div>
+                    <h3>Mobile-First</h3>
+                    <p>Interface responsive optimisée pour les déclarations depuis smartphone ou tablette</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📊</div>
+                    <h3>Rapports Détaillés</h3>
+                    <p>PDF complets avec analyse IA, photos, données GPS, score fraude et recommandations</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="process">
+            <h2>Comment ça marche?</h2>
+            <div class="process-steps">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <h3>Créer lien unique</h3>
+                    <p>L'assurance génère un lien de déclaration personnalisé pour le client</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <h3>Remplir formulaire</h3>
+                    <p>Le client accède au formulaire et capture son GPS (obligatoire)</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <h3>Envoyer photos</h3>
+                    <p>Upload des photos de sinistre avec données EXIF intactes</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <h3>Analyse IA</h3>
+                    <p>Système analyse automatiquement: type dégâts, sévérité, fraude</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">5</div>
+                    <h3>Rapport PDF</h3>
+                    <p>Rapport complet généré et envoyé au client + assurance</p>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>🔐 AssuranceIA™ 2026 | Propriété Intellectuelle Protégée</p>
+        </footer>
+    </body>
+    </html>
+    """
+    return Response(content=html, media_type="text/html")
+
+
 @app.get("/declare/{token}")
 def get_declaration_form(token: str):
-    """
-    Client access: Simple declaration form.
-    If token is a pending declaration link, show form.
-    If token is an existing claim, show claim details.
-    """
+    """Beautiful declaration form for AssuranceIA™."""
     # Check if it's a declaration link (pending)
     if token in declaration_links:
         link_data = declaration_links[token]
@@ -732,93 +1041,288 @@ def get_declaration_form(token: str):
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>Déclaration de Sinistre - AssuranceIA™</title>
             <style>
-                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }}
-                .container {{ max-width: 600px; margin: 0 auto; }}
-                .card {{ background: white; border-radius: 12px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }}
-                .header {{ text-align: center; margin-bottom: 30px; }}
-                .header h1 {{ color: #667eea; font-size: 2em; margin-bottom: 8px; }}
-                .header p {{ color: #666; }}
-                .form-group {{ margin-bottom: 20px; }}
-                label {{ display: block; margin-bottom: 8px; font-weight: 600; color: #333; }}
-                input, select, textarea {{ width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-family: inherit; font-size: inherit; }}
-                textarea {{ resize: vertical; min-height: 100px; }}
-                input:focus, select:focus, textarea:focus {{ outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,0.1); }}
-                button {{ width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 6px; font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.2s; }}
-                button:hover {{ transform: translateY(-2px); }}
-                .required {{ color: red; }}
-                .status {{ text-align: center; margin-bottom: 20px; padding: 12px; background: #e8f4f8; border-radius: 6px; color: #0066cc; }}
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }
+
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+                    min-height: 100vh;
+                    padding: 20px;
+                    color: #e2e8f0;
+                }
+
+                .container {
+                    max-width: 700px;
+                    margin: 0 auto;
+                }
+
+                header {
+                    text-align: center;
+                    margin-bottom: 40px;
+                    padding: 20px;
+                }
+
+                .logo {
+                    font-size: 32px;
+                    font-weight: 800;
+                    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                    -webkit-background-clip: text;
+                    -webkit-text-fill-color: transparent;
+                    background-clip: text;
+                    margin-bottom: 10px;
+                }
+
+                .subtitle {
+                    color: #cbd5e1;
+                    font-size: 16px;
+                }
+
+                .card {
+                    background: linear-gradient(135deg, rgba(30, 41, 59, 0.9) 0%, rgba(51, 65, 85, 0.9) 100%);
+                    border: 1px solid rgba(148, 163, 184, 0.2);
+                    border-radius: 16px;
+                    padding: 40px;
+                    backdrop-filter: blur(10px);
+                    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+                }
+
+                .form-group {
+                    margin-bottom: 25px;
+                }
+
+                label {
+                    display: block;
+                    margin-bottom: 10px;
+                    font-weight: 600;
+                    color: #f1f5f9;
+                    font-size: 14px;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                }
+
+                .required {
+                    color: #ef4444;
+                }
+
+                input[type="text"],
+                input[type="email"],
+                select,
+                textarea {
+                    width: 100%;
+                    padding: 14px;
+                    background: rgba(15, 23, 42, 0.5);
+                    border: 2px solid rgba(148, 163, 184, 0.2);
+                    border-radius: 8px;
+                    font-family: inherit;
+                    font-size: 16px;
+                    color: #f1f5f9;
+                    transition: all 0.3s ease;
+                }
+
+                input[type="text"]::placeholder,
+                input[type="email"]::placeholder,
+                textarea::placeholder {
+                    color: #64748b;
+                }
+
+                input[type="text"]:focus,
+                input[type="email"]:focus,
+                select:focus,
+                textarea:focus {
+                    outline: none;
+                    border-color: #3b82f6;
+                    background: rgba(15, 23, 42, 0.8);
+                    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+                }
+
+                textarea {
+                    resize: vertical;
+                    min-height: 120px;
+                }
+
+                .gps-section {
+                    background: rgba(59, 130, 246, 0.1);
+                    border: 2px dashed rgba(59, 130, 246, 0.3);
+                    border-radius: 8px;
+                    padding: 20px;
+                    margin-bottom: 25px;
+                    text-align: center;
+                }
+
+                .gps-button {
+                    display: inline-block;
+                    padding: 14px 30px;
+                    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 16px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    transition: all 0.3s ease;
+                    margin-bottom: 12px;
+                }
+
+                .gps-button:hover:not(:disabled) {
+                    transform: translateY(-2px);
+                    box-shadow: 0 10px 25px rgba(59, 130, 246, 0.4);
+                }
+
+                .gps-button:disabled {
+                    opacity: 0.7;
+                    cursor: not-allowed;
+                }
+
+                #gpsStatus {
+                    min-height: 24px;
+                    font-size: 14px;
+                    color: #cbd5e1;
+                }
+
+                .submit-button {
+                    width: 100%;
+                    padding: 16px;
+                    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 18px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    transition: all 0.3s ease;
+                    box-shadow: 0 10px 30px rgba(59, 130, 246, 0.3);
+                }
+
+                .submit-button:hover {
+                    transform: translateY(-2px);
+                    box-shadow: 0 15px 40px rgba(59, 130, 246, 0.4);
+                }
+
+                .submit-button:disabled {
+                    opacity: 0.7;
+                    cursor: not-allowed;
+                }
+
+                #status {
+                    margin-top: 25px;
+                    padding: 20px;
+                    border-radius: 8px;
+                    text-align: center;
+                    display: none;
+                }
+
+                .success-message {
+                    background: rgba(34, 197, 94, 0.1);
+                    border: 2px solid rgba(34, 197, 94, 0.3);
+                    color: #86efac;
+                }
+
+                .error-message {
+                    background: rgba(239, 68, 68, 0.1);
+                    border: 2px solid rgba(239, 68, 68, 0.3);
+                    color: #fca5a5;
+                }
+
+                .info-text {
+                    font-size: 13px;
+                    color: #94a3b8;
+                    margin-top: 8px;
+                    font-style: italic;
+                }
+
+                @media (max-width: 768px) {
+                    .card {
+                        padding: 25px;
+                    }
+
+                    header {
+                        margin-bottom: 30px;
+                    }
+
+                    .logo {
+                        font-size: 24px;
+                    }
+                }
             </style>
         </head>
         <body>
             <div class="container">
+                <header>
+                    <div class="logo">🔐 AssuranceIA™</div>
+                    <p class="subtitle">Déclaration de sinistre - Analyse IA automatique</p>
+                </header>
+
                 <div class="card">
-                    <div class="header">
-                        <h1>🔍 Déclaration de Sinistre</h1>
-                        <p>AssuranceIA™ - Validation automatisée</p>
-                    </div>
-
-                    <div class="status">
-                        ✅ Lien de déclaration valide - Remplissez le formulaire ci-dessous
-                    </div>
-
-                    <form id="declarationForm">
+                    <form id="declarationForm" enctype="multipart/form-data">
+                        <!-- GPS Capture - MANDATORY -->
                         <div class="form-group">
-                            <label for="gpsBtn">📍 Géolocalisation <span class="required">*OBLIGATOIRE</span></label>
-                            <button type="button" id="gpsBtn" style="width: 100%; background: linear-gradient(135deg, #17a2b8 0%, #138496 100%); color: white; padding: 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
-                                📍 Capturer mon GPS (obligatoire)
-                            </button>
-                            <div id="gpsStatus" style="margin-top: 8px; font-size: 0.85em; color: #666;"></div>
+                            <label>📍 Géolocalisation <span class="required">*</span></label>
+                            <div class="gps-section">
+                                <button id="gpsBtn" type="button" class="gps-button">📍 Capturer mon GPS</button>
+                                <div id="gpsStatus"></div>
+                                <p class="info-text">La géolocalisation est obligatoire pour valider votre déclaration</p>
+                            </div>
                         </div>
 
+                        <!-- Email -->
                         <div class="form-group">
                             <label for="email">Email <span class="required">*</span></label>
-                            <input type="email" id="email" name="email" value="{client_email}" required>
+                            <input type="email" id="email" name="email" value="{client_email}" placeholder="votre@email.com" required>
                         </div>
 
+                        <!-- Damage Type -->
                         <div class="form-group">
-                            <label for="damageType">Type de dégât <span class="required">*</span></label>
+                            <label for="damageType">Type de dégâts <span class="required">*</span></label>
                             <select id="damageType" name="damageType" required>
-                                <option value="">-- Sélectionner --</option>
+                                <option value="">-- Sélectionnez un type --</option>
                                 <optgroup label="💧 Dégâts des Eaux">
-                                    <option value="fuite">Fuite d'eau</option>
-                                    <option value="inondation">Inondation</option>
-                                    <option value="rupture_canalisation">Rupture de canalisation</option>
-                                    <option value="infiltration_toiture">Infiltration toiture</option>
+                                    <option value="water_damage">Dégâts des eaux</option>
+                                    <option value="flooding">Inondation</option>
+                                    <option value="pipe_burst">Tuyauterie éclatée</option>
+                                    <option value="roof_leak">Fuite de toiture</option>
+                                    <option value="appliance_leak">Fuite électroménager</option>
                                 </optgroup>
                                 <optgroup label="🚗 Sinistres Automobile">
-                                    <option value="accident_circulation">Accident de circulation</option>
-                                    <option value="vandalisme_auto">Vandalisme/Rayures</option>
-                                </optgroup>
-                                <optgroup label="🔓 Cambriolage">
-                                    <option value="effraction">Effraction/Intrusion</option>
-                                    <option value="vol">Vol/Cambriolage</option>
+                                    <option value="vehicle_accident">Accident automobile</option>
+                                    <option value="vehicle_vandalism">Vandalisme automobile</option>
                                 </optgroup>
                             </select>
                         </div>
 
+                        <!-- Address -->
                         <div class="form-group">
                             <label for="address">Adresse du sinistre <span class="required">*</span></label>
-                            <input type="text" id="address" name="address" placeholder="12 Rue de Rivoli, 75001 Paris" required>
+                            <input type="text" id="address" name="address" placeholder="123 rue de la Paix, 75000 Paris" required>
+                            <p class="info-text">Doit correspondre à votre GPS (tolérance 2km)</p>
                         </div>
 
+                        <!-- Description -->
                         <div class="form-group">
-                            <label for="description">Description des dégâts <span class="required">*</span></label>
-                            <textarea id="description" name="description" placeholder="Décrivez les dégâts constatés..." required></textarea>
+                            <label for="description">Description détaillée <span class="required">*</span></label>
+                            <textarea id="description" name="description" placeholder="Décrivez précisément les dégâts constatés..." required></textarea>
                         </div>
 
+                        <!-- Photos -->
                         <div class="form-group">
-                            <label for="photos">Photos (optionnel)</label>
+                            <label for="photos">📸 Photos des dégâts (optionnel)</label>
                             <input type="file" id="photos" name="photos" multiple accept="image/*">
+                            <p class="info-text">Uploadez plusieurs photos pour une analyse meilleure</p>
                         </div>
 
+                        <!-- Hidden GPS fields -->
                         <input type="hidden" id="gpsLat" name="gpsLat">
                         <input type="hidden" id="gpsLon" name="gpsLon">
 
-                        <button type="submit">📤 Soumettre la déclaration</button>
+                        <!-- Submit Button -->
+                        <button type="submit" class="submit-button">🚀 Soumettre ma déclaration</button>
                     </form>
 
-                    <div id="status" style="margin-top: 20px; text-align: center; display: none;"></div>
+                    <!-- Status Messages -->
+                    <div id="status"></div>
                 </div>
             </div>
 
@@ -827,14 +1331,14 @@ def get_declaration_form(token: str):
                 const apiUrl = window.location.origin;
                 let currentGPS = null;
 
-                // GPS Capture
+                // GPS Capture Button
                 document.getElementById("gpsBtn").addEventListener("click", (e) => {
                     e.preventDefault();
                     const gpsBtn = document.getElementById("gpsBtn");
                     const gpsStatus = document.getElementById("gpsStatus");
 
                     if (!navigator.geolocation) {
-                        gpsStatus.innerHTML = "❌ Géolocalisation non supportée";
+                        gpsStatus.innerHTML = "<span style=\"color: #fca5a5;\">❌ Géolocalisation non supportée</span>";
                         return;
                     }
 
@@ -851,25 +1355,29 @@ def get_declaration_form(token: str):
                             document.getElementById("gpsLat").value = currentGPS.lat;
                             document.getElementById("gpsLon").value = currentGPS.lon;
 
-                            gpsBtn.textContent = `✅ GPS: ${currentGPS.lat.toFixed(5)}}, ${currentGPS.lon.toFixed(5)}}`;
-                            gpsStatus.innerHTML = `<span style="color: green;">✓ Position précision: ±${Math.round(position.coords.accuracy)}}m</span>`;
+                            const lat = currentGPS.lat.toFixed(5);
+                            const lon = currentGPS.lon.toFixed(5);
+                            const acc = Math.round(position.coords.accuracy);
+
+                            gpsBtn.textContent = `✅ GPS: ${lat}, ${lon}`;
+                            gpsStatus.innerHTML = `<span style="color: #86efac;">✓ Précision: ±${acc}m</span>`;
                             gpsBtn.disabled = false;
                         },
                         (error) => {
-                            gpsStatus.innerHTML = `❌ Erreur: ${error.message}}`;
+                            gpsStatus.innerHTML = `<span style="color: #fca5a5;">❌ Erreur: ${error.message}</span>`;
                             gpsBtn.textContent = "📍 Capturer mon GPS";
                             gpsBtn.disabled = false;
                         },
                         { enableHighAccuracy: true, timeout: 10000 }
                     );
-                }});
+                });
 
+                // Form Submission
                 document.getElementById("declarationForm").addEventListener("submit", async (e) => {
                     e.preventDefault();
 
-                    // Vérifier que GPS est capturé
                     if (!currentGPS) {
-                        alert("❌ GPS OBLIGATOIRE pour déclarer un sinistre!\nCliquez sur \"Capturer mon GPS\" et approuvez l'accès.");
+                        alert("❌ GPS OBLIGATOIRE!\n\nCliquez sur le bouton GPS et approuvez l'accès à votre localisation.");
                         return;
                     }
 
@@ -883,7 +1391,7 @@ def get_declaration_form(token: str):
                     formData.append("token", token);
 
                     try {
-                        const response = await fetch(`${apiUrl}}/declare/${token}}/submit`, {
+                        const response = await fetch(`${apiUrl}/declare/${token}/submit`, {
                             method: "POST",
                             body: formData
                         });
@@ -891,20 +1399,26 @@ def get_declaration_form(token: str):
                         const data = await response.json();
 
                         if (response.ok) {
-                            document.getElementById("status").style.display = "block";
-                            document.getElementById("status").innerHTML = `
-                                <div style="color: green; padding: 15px; background: #e8f5e9; border-radius: 6px;">
-                                    <h3>✅ Sinistre déclaré avec succès!</h3>
-                                    <p>Référence: ${data.claim_id}}</p>
-                                    <p>Vous recevrez le rapport d'analyse par email.</p>
-                                </div>
+                            const statusDiv = document.getElementById("status");
+                            statusDiv.className = "success-message";
+                            statusDiv.style.display = "block";
+                            statusDiv.innerHTML = `
+                                <h3 style="margin-bottom: 10px;">✅ Sinistre déclaré avec succès!</h3>
+                                <p style="margin: 5px 0;"><strong>Référence:</strong> ${data.claim_id}</p>
+                                <p style="margin: 5px 0;">Vous recevrez le rapport d'analyse par email sous peu.</p>
                             `;
                             document.getElementById("declarationForm").style.display = "none";
                         } else {
-                            alert("Erreur: " + data.detail);
+                            const statusDiv = document.getElementById("status");
+                            statusDiv.className = "error-message";
+                            statusDiv.style.display = "block";
+                            statusDiv.innerHTML = `<strong>❌ Erreur:</strong> ${data.detail || "Une erreur est survenue"}`;
                         }
                     } catch (err) {
-                        alert("Erreur réseau: " + err.message);
+                        const statusDiv = document.getElementById("status");
+                        statusDiv.className = "error-message";
+                        statusDiv.style.display = "block";
+                        statusDiv.innerHTML = `<strong>❌ Erreur réseau:</strong> ${err.message}`;
                     }
                 });
             </script>
