@@ -97,6 +97,14 @@
                     <h2>Déclarer un Sinistre</h2>
                     <form id="claimForm">
                         <div class="form-group">
+                            <label for="gpsBtn">📍 Géolocalisation Téléphone</label>
+                            <button type="button" id="gpsBtn" style="width: 100%; background: linear-gradient(135deg, #17a2b8 0%, #138496 100%);">
+                                📍 Capturer mon GPS
+                            </button>
+                            <div id="gpsStatus" style="margin-top: 8px; font-size: 0.85em; color: #666;"></div>
+                        </div>
+
+                        <div class="form-group">
                             <label for="email">Email assuré</label>
                             <input type="email" id="email" required placeholder="vous@example.com">
                         </div>
@@ -154,6 +162,8 @@
         const claimsList = document.getElementById('claimsList');
 
         let map, markersLayer;
+        let currentPhoneGPS = null; // Store phone GPS
+
         function initMap() {
             map = L.map('map').setView([46.6, 2.4], 5); // Centre France
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -181,14 +191,23 @@
 
         claimForm.addEventListener('submit', async (e) => {
             e.preventDefault();
+
+            // Require GPS
+            if (!currentPhoneGPS) {
+                alert('❌ Veuillez d\'abord capturer votre GPS en cliquant sur le bouton "Capturer mon GPS"');
+                return;
+            }
+
             const claimData = {
                 user_email: document.getElementById('email').value,
                 address: document.getElementById('address').value,
                 damage_type: document.getElementById('damageType').value,
-                description: document.getElementById('description').value
+                description: document.getElementById('description').value,
+                phone_gps_lat: currentPhoneGPS.lat,
+                phone_gps_lon: currentPhoneGPS.lon
             };
             try {
-                debugResponse.textContent = '⏳ Création en cours (géocodage adresse)...';
+                debugResponse.textContent = '⏳ Vérification: GPS téléphone vs adresse déclarée...';
                 const res = await fetch(`${API_URL}/claims`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -196,9 +215,17 @@
                 });
                 const data = await res.json();
                 if (res.ok) {
-                    debugResponse.innerHTML = `<span class="success">✅ Sinistre créé: ${data.claim_id}</span>\n` +
-                        (data.location ? `📍 Géocodé: ${data.location.latitude.toFixed(4)}, ${data.location.longitude.toFixed(4)}` : '⚠️ Adresse non géolocalisée');
+                    let gpsCheck = '';
+                    if (data.gps_verification) {
+                        const match = data.gps_verification.matches ? '✅ MATCH' : '⚠️ DÉSACCORD';
+                        const dist = data.gps_verification.distance_km !== null ? ` (${data.gps_verification.distance_km}km)` : '';
+                        gpsCheck = `\n📍 Vérif GPS: ${match}${dist}`;
+                    }
+                    debugResponse.innerHTML = `<span class="success">✅ Sinistre créé: ${data.claim_id}</span>${gpsCheck}`;
                     claimForm.reset();
+                    currentPhoneGPS = null; // Reset GPS après création
+                    document.getElementById('gpsBtn').textContent = '📍 Capturer mon GPS';
+                    document.getElementById('gpsStatus').innerHTML = '';
                     loadClaims();
                 } else {
                     debugResponse.innerHTML = `<span class="error">❌ ${data.detail || 'Erreur'}</span>\n${JSON.stringify(data, null, 2)}`;
@@ -266,13 +293,22 @@
                                 <div style="font-size:0.85em; color:#555;">${escapeHtml(a.recommendation || '-')}</div>
                             </div>`;
                     }
+                    // GPS phone verification indicator
+                    let gpsPhoneIndicator = '';
+                    if (c.gps_verification) {
+                        const gv = c.gps_verification;
+                        const icon = gv.matches ? '✅' : '⚠️';
+                        const status = gv.matches ? 'Match' : `Désaccord ${gv.distance_km}km`;
+                        gpsPhoneIndicator = ` · ${icon} GPS: ${status}`;
+                    }
+
                     return `
                         <div class="claim-item">
                             <h3>📋 ${escapeHtml(c.damage_type || 'Sans type')} ${a ? severityBadge(a.damage_severity) : ''}</h3>
                             <p><strong>Assuré:</strong> ${escapeHtml(c.user_email)}</p>
                             <p><strong>Adresse:</strong> ${escapeHtml(c.address)}</p>
                             <p><strong>Description:</strong> ${escapeHtml(c.description)}</p>
-                            <p style="font-size:0.82em;color:#999;">📷 ${c.photo_count || 0} photo(s)${c.location ? ' · 📍 géolocalisé' : ''}</p>
+                            <p style="font-size:0.82em;color:#999;">📷 ${c.photo_count || 0} photo(s)${c.location ? ' · 📍 géocodé' : ''}${gpsPhoneIndicator}</p>
                             ${analysisHtml}
                             <div class="actions">
                                 <button class="btn-teal" onclick="uploadPhoto('${c.claim_id}')">📸 Photo</button>
@@ -325,6 +361,46 @@
 
         function downloadReport(claimId) {
             window.open(`${API_URL}/claims/${claimId}/report`, '_blank');
+        }
+
+        // GPS Capture Handler (attached AFTER DOM is ready)
+        const gpsBtn = document.getElementById('gpsBtn');
+        const gpsStatus = document.getElementById('gpsStatus');
+
+        if (gpsBtn) {
+            gpsBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+
+                if (!navigator.geolocation) {
+                    gpsStatus.innerHTML = '❌ Géolocalisation non supportée par votre navigateur';
+                    return;
+                }
+
+                gpsBtn.disabled = true;
+                gpsBtn.textContent = '⏳ Localisation en cours...';
+                gpsStatus.innerHTML = '';
+
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        currentPhoneGPS = {
+                            lat: position.coords.latitude,
+                            lon: position.coords.longitude,
+                            accuracy: position.coords.accuracy
+                        };
+                        const lat = currentPhoneGPS.lat.toFixed(5);
+                        const lon = currentPhoneGPS.lon.toFixed(5);
+                        gpsBtn.textContent = `✅ GPS Capturé: ${lat}, ${lon}`;
+                        gpsStatus.innerHTML = `<span class="success">✓ Position précision: ±${Math.round(currentPhoneGPS.accuracy)}m</span>`;
+                        gpsBtn.disabled = false;
+                    },
+                    (error) => {
+                        gpsStatus.innerHTML = `❌ Erreur: ${error.message}`;
+                        gpsBtn.textContent = '📍 Capturer mon GPS';
+                        gpsBtn.disabled = false;
+                    },
+                    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                );
+            });
         }
 
         loadClaims();

@@ -50,7 +50,9 @@ class ClaimCreate(BaseModel):
     user_email: str
     damage_type: str
     address: str
-    description: str = ""
+    description: str
+    phone_gps_lat: float | None = None  # GPS téléphone (latitude)
+    phone_gps_lon: float | None = None  # GPS téléphone (longitude) = ""
 
 
 # ----------------------------------------------------------------------------
@@ -324,10 +326,17 @@ def health():
 
 @app.post("/claims")
 def create_claim(claim: ClaimCreate):
-    """Create a new claim, geocode its address, and store it in memory."""
+    """Create a new claim, geocode its address, verify GPS phone vs address."""
     claim_id = f"CLM-{datetime.now().year}-{uuid.uuid4().hex[:6].upper()}"
 
     location = geocode_address(claim.address)
+
+    # Check GPS phone vs declared address (anti-fraud)
+    phone_gps = None
+    gps_verification = None
+    if claim.phone_gps_lat is not None and claim.phone_gps_lon is not None:
+        phone_gps = {"latitude": claim.phone_gps_lat, "longitude": claim.phone_gps_lon}
+        gps_verification = check_gps_location_match(location, phone_gps)
 
     claim_data = {
         "claim_id": claim_id,
@@ -335,7 +344,9 @@ def create_claim(claim: ClaimCreate):
         "damage_type": claim.damage_type,
         "address": claim.address,
         "description": claim.description,
-        "location": location,  # {latitude, longitude, display_name} or None
+        "location": location,  # {latitude, longitude, display_name} from address geocoding
+        "phone_gps": phone_gps,  # {latitude, longitude} from phone at claim creation
+        "gps_verification": gps_verification,  # GPS phone vs declared address check
         "photos": [],
         "analysis": None,
         "status": "open",
@@ -343,7 +354,15 @@ def create_claim(claim: ClaimCreate):
     }
 
     claims_db[claim_id] = claim_data
-    print(f"Claim created: {claim_id} (geocoded={location is not None})")
+
+    # Log GPS verification result
+    if gps_verification:
+        status = "MATCH" if gps_verification["matches"] else "MISMATCH"
+        distance = gps_verification.get("distance_km", "?")
+        print(f"Claim created: {claim_id} | GPS Verification: {status} ({distance}km)")
+    else:
+        print(f"Claim created: {claim_id} (geocoded={location is not None}, no phone GPS)")
+
     return claim_data
 
 
