@@ -97,11 +97,14 @@
                     <h2>Déclarer un Sinistre</h2>
                     <form id="claimForm">
                         <div class="form-group">
-                            <label for="gpsBtn">📍 Géolocalisation Téléphone</label>
+                            <label for="gpsBtn">📍 Géolocalisation Téléphone <span style="color: #dc3545; font-weight: bold;">*OBLIGATOIRE</span></label>
                             <button type="button" id="gpsBtn" style="width: 100%; background: linear-gradient(135deg, #17a2b8 0%, #138496 100%);">
-                                📍 Capturer mon GPS
+                                📍 Capturer mon GPS (obligatoire pour remboursement)
                             </button>
                             <div id="gpsStatus" style="margin-top: 8px; font-size: 0.85em; color: #666;"></div>
+                            <div style="margin-top: 8px; padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; font-size: 0.85em; color: #856404;">
+                                ⚠️ <strong>Obligatoire:</strong> Votre position GPS est requise pour valider votre sinistre et traiter votre remboursement.
+                            </div>
                         </div>
 
                         <div class="form-group">
@@ -192,9 +195,9 @@
         claimForm.addEventListener('submit', async (e) => {
             e.preventDefault();
 
-            // Require GPS
+            // Require GPS - STRICT POLICY
             if (!currentPhoneGPS) {
-                alert('❌ Veuillez d\'abord capturer votre GPS en cliquant sur le bouton "Capturer mon GPS"');
+                alert('🔒 GPS OBLIGATOIRE\n\nVotre position GPS est REQUISE pour:\n✓ Valider votre sinistre\n✓ Traiter votre demande\n✓ Obtenir votre remboursement\n\nVeuillez cliquer sur "Capturer mon GPS" et APPROUVER l\'accès à votre localisation.');
                 return;
             }
 
