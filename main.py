@@ -7,6 +7,7 @@ from anthropic import Anthropic
 import piexif
 from PIL import Image
 from io import BytesIO
+import hashlib
 import uuid
 from datetime import datetime
 import os
@@ -129,6 +130,34 @@ def extract_json(text: str) -> dict | None:
     return None
 
 
+def extract_exif_datetime(image_data: bytes) -> dict | None:
+    """Extract date/time from image EXIF metadata."""
+    try:
+        from PIL import Image
+        from PIL.ExifTags import TAGS
+
+        img = Image.open(BytesIO(image_data))
+        exif_data = img._getexif()
+
+        if not exif_data:
+            return None
+
+        for tag_id, value in exif_data.items():
+            tag_name = TAGS.get(tag_id, tag_id)
+            # DateTime tags: 306 = DateTime, 36867 = DateTimeOriginal, 36868 = DateTimeDigitized
+            if tag_name in ["DateTime", "DateTimeOriginal", "DateTimeDigitized"]:
+                try:
+                    # Format: "2026:06:08 14:30:45"
+                    dt = datetime.strptime(str(value), "%Y:%m:%d %H:%M:%S")
+                    return {"datetime": dt, "timestamp": dt.isoformat()}
+                except:
+                    pass
+        return None
+    except Exception as e:
+        print(f"EXIF datetime extraction error: {e}")
+        return None
+
+
 def extract_gps_from_exif(image_data: bytes) -> dict | None:
     """Extract GPS coordinates from image EXIF metadata."""
     try:
@@ -169,6 +198,64 @@ def extract_gps_from_exif(image_data: bytes) -> dict | None:
     except Exception as e:
         print(f"EXIF extraction error: {e}")
         return None
+
+
+def calculate_image_hash(image_data: bytes) -> str:
+    """Calculate MD5 hash of image for duplicate detection."""
+    return hashlib.md5(image_data).hexdigest()
+
+
+def check_image_duplicates(image_hash: str, claim_id: str) -> dict:
+    """Check if same image has been used in other claims (reverse image search)."""
+    duplicate_claims = []
+
+    for cid, claim in claims_db.items():
+        if cid == claim_id:
+            continue
+        for photo in claim.get("photos", []):
+            # We'll store hash with photo if detected, compare
+            if photo.get("image_hash") == image_hash:
+                duplicate_claims.append(cid)
+
+    result = {
+        "is_duplicate": len(duplicate_claims) > 0,
+        "duplicate_count": len(duplicate_claims),
+        "duplicate_claims": duplicate_claims,
+        "fraud_indicator": None
+    }
+
+    if len(duplicate_claims) > 0:
+        result["fraud_indicator"] = f"🚨 IMAGE RECYCLÉE: Même photo détectée dans {len(duplicate_claims)} autre(s) sinistre(s)!"
+
+    return result
+
+
+def check_fraud_history(user_email: str, address: str) -> dict:
+    """Check claim history to detect fraud networks."""
+    email_claims = [c for c in claims_db.values() if c.get("user_email", "").lower() == user_email.lower()]
+    address_claims = [c for c in claims_db.values() if c.get("address", "").lower() == address.lower()]
+
+    fraud_flags = {
+        "email_claim_count": len(email_claims),
+        "address_claim_count": len(address_claims),
+        "fraud_indicators": []
+    }
+
+    # RED FLAG: Same email, many claims (different addresses)
+    if len(email_claims) >= 5:
+        fraud_flags["fraud_indicators"].append(f"⚠️ HISTORIQUE: {len(email_claims)} sinistres avec cet email (possible réseau)")
+
+    # RED FLAG: Same address, many claims (different people)
+    if len(address_claims) >= 4:
+        fraud_flags["fraud_indicators"].append(f"🚨 HISTORIQUE: {len(address_claims)} sinistres à cette adresse (réseau probable)")
+
+    # RED FLAG: Same email + same address multiple times
+    same_email_address = [c for c in email_claims if c.get("address", "").lower() == address.lower()]
+    if len(same_email_address) >= 3:
+        fraud_flags["fraud_indicators"].append(f"🚨 RÉSEAU: {len(same_email_address)} sinistres email+adresse identiques")
+        fraud_flags["fraud_score_increase"] = 50
+
+    return fraud_flags
 
 
 def check_gps_location_match(claim_location: dict, photo_gps: dict) -> dict:
@@ -364,6 +451,31 @@ Repondez UNIQUEMENT avec un objet JSON valide (aucun texte avant ou apres) avec 
             analysis["fraud_indicators"] = []
         analysis["fraud_indicators"].append(f"⚠️ PHOTO SUSPECTE/FALSIFIEE: {ai_status.upper()} - SCORE +{ai_fraud_increase}pts")
 
+    # Check EXIF timestamp coherence
+    if claim.get("photos") and claim["photos"][0].get("exif_datetime"):
+        photo_datetime = claim["photos"][0]["exif_datetime"]["datetime"]
+        claim_datetime = datetime.fromisoformat(claim["created_at"])
+        time_diff_hours = abs((claim_datetime - photo_datetime).total_seconds() / 3600)
+
+        # If photo is older than 30 days before claim = SUSPICIOUS
+        if time_diff_hours > 720:  # 30 days
+            timestamp_penalty = 40
+            analysis["fraud_score"] = min(100, analysis.get("fraud_score", 0) + timestamp_penalty)
+            if "fraud_indicators" not in analysis or not isinstance(analysis["fraud_indicators"], list):
+                analysis["fraud_indicators"] = []
+            days_old = int(time_diff_hours / 24)
+            analysis["fraud_indicators"].append(f"⚠️ PHOTO ANCIENNE: Photo prise {days_old} jours avant sinistre - SCORE +{timestamp_penalty}pts")
+
+    # Check fraud history
+    fraud_history = claim.get("fraud_history", {})
+    if fraud_history.get("fraud_indicators"):
+        history_penalty = fraud_history.get("fraud_score_increase", 20)
+        analysis["fraud_score"] = min(100, analysis.get("fraud_score", 0) + history_penalty)
+        if "fraud_indicators" not in analysis or not isinstance(analysis["fraud_indicators"], list):
+            analysis["fraud_indicators"] = []
+        for indicator in fraud_history["fraud_indicators"]:
+            analysis["fraud_indicators"].append(indicator)
+
     return analysis
 
 
@@ -407,6 +519,9 @@ def create_claim(claim: ClaimCreate):
         phone_gps = {"latitude": claim.phone_gps_lat, "longitude": claim.phone_gps_lon}
         gps_verification = check_gps_location_match(location, phone_gps)
 
+    # Check fraud history (same email/address patterns)
+    fraud_history = check_fraud_history(claim.user_email, claim.address)
+
     claim_data = {
         "claim_id": claim_id,
         "user_email": claim.user_email,
@@ -416,6 +531,7 @@ def create_claim(claim: ClaimCreate):
         "location": location,  # {latitude, longitude, display_name} from address geocoding
         "phone_gps": phone_gps,  # {latitude, longitude} from phone at claim creation
         "gps_verification": gps_verification,  # GPS phone vs declared address check
+        "fraud_history": fraud_history,  # Check for email/address patterns
         "photos": [],
         "analysis": None,
         "status": "open",
@@ -479,12 +595,23 @@ async def upload_photo(claim_id: str, file: UploadFile = File(...)):
     # Extract GPS from EXIF
     gps_data = extract_gps_from_exif(contents)
 
+    # Extract datetime from EXIF
+    exif_datetime = extract_exif_datetime(contents)
+
+    # Calculate image hash for duplicate detection
+    image_hash = calculate_image_hash(contents)
+
+    # Check for duplicate images
+    duplicate_check = check_image_duplicates(image_hash, claim_id)
+
     base64_content = base64.b64encode(contents).decode("utf-8")
     photo_entry = {
         "filename": file.filename,
         "content_type": media_type,
         "data": base64_content,
         "gps": gps_data,  # {latitude, longitude} or None
+        "exif_datetime": exif_datetime,  # datetime from EXIF
+        "image_hash": image_hash,  # MD5 hash for duplicate detection
     }
     claims_db[claim_id]["photos"].append(photo_entry)
 
@@ -493,6 +620,9 @@ async def upload_photo(claim_id: str, file: UploadFile = File(...)):
         "filename": file.filename,
         "photo_count": len(claims_db[claim_id]["photos"]),
         "gps_detected": gps_data is not None,
+        "exif_datetime": exif_datetime.get("timestamp") if exif_datetime else None,
+        "is_duplicate": duplicate_check["is_duplicate"],
+        "duplicate_warning": duplicate_check["fraud_indicator"],
         "message": "Photo uploadee avec succes",
     }
 
