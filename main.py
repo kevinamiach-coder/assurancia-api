@@ -394,15 +394,15 @@ Repondez UNIQUEMENT avec un objet JSON valide (aucun texte avant ou apres) avec 
     gps_check = check_gps_location_match(claim.get("location"), phone_gps)
     analysis["location_verification"] = gps_check
 
-    # Increase fraud score based on location mismatch
+    # Increase fraud score based on location mismatch (STRICT RULE)
     if gps_check["flag"] == "LOCATION_MISMATCH":
         distance = gps_check.get("distance_km", 0)
-        if distance > 0.1:  # > 100 meters
-            fraud_increase = min(40, int(distance * 2))  # Increase by 2 points per km, max 40
+        if distance > 0.1:  # > 100 meters = AUTOMATIC +40 pts fraud
+            fraud_increase = 40  # ALWAYS +40 for any mismatch > 100m
             analysis["fraud_score"] = min(100, analysis.get("fraud_score", 0) + fraud_increase)
             if "fraud_indicators" not in analysis or not isinstance(analysis["fraud_indicators"], list):
                 analysis["fraud_indicators"] = []
-            analysis["fraud_indicators"].append(f"GEOLOCALISATION: GPS a {distance}km de l'adresse (MISMATCH CRITIQUE)")
+            analysis["fraud_indicators"].append(f"🚨 GEOLOCALISATION MISMATCH: GPS a {distance}km de l'adresse declaree - SCORE +{fraud_increase}pts (SYSTÉMATIQUE)")
 
     # Check damage type coherence (CRITICAL FRAUD CHECK)
     detected_type = analysis.get("detected_damage_type", "").lower()
