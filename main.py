@@ -55,6 +55,25 @@ app.add_middleware(
 )
 
 
+# ========== STARTUP: Load declaration links from MongoDB ==========
+@app.on_event("startup")
+async def load_declaration_links_from_mongodb():
+    """Load declaration links from MongoDB on app startup."""
+    try:
+        global declaration_links
+        for doc in declaration_links_collection.find({}, {"_id": 0}):
+            token = doc.get("token")
+            if token:
+                declaration_links[token] = {
+                    "insurer_email": doc.get("insurer_email", ""),
+                    "client_email": doc.get("client_email", ""),
+                    "created_at": doc.get("created_at", ""),
+                    "status": doc.get("status", "pending")
+                }
+    except Exception as e:
+        print(f"⚠️  Warning: Could not load declaration links from MongoDB: {e}")
+
+
 # ----------------------------------------------------------------------------
 # Models
 # ----------------------------------------------------------------------------
@@ -699,12 +718,21 @@ def create_declaration_link(request: DeclarationLinkRequest):
     """
     token = secrets.token_urlsafe(32)
 
-    declaration_links[token] = {
+    link_data = {
+        "token": token,
         "insurer_email": request.insurer_email,
         "client_email": request.client_email,
         "created_at": datetime.now().isoformat(),
         "status": "pending"  # Not yet filled by client
     }
+
+    declaration_links[token] = link_data
+
+    # Save to MongoDB so token survives Render redeploys
+    try:
+        declaration_links_collection.insert_one(link_data)
+    except:
+        pass
 
     base_url = os.getenv("APP_URL", "https://assurancia-api-2.onrender.com")
     declaration_url = f"{base_url}/declare/{token}"
