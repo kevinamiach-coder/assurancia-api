@@ -724,7 +724,7 @@ def get_declaration_form(token: str):
         link_data = declaration_links[token]
         client_email = link_data.get("client_email", "")
 
-        html = f"""
+        html = """
         <!DOCTYPE html>
         <html lang="fr">
         <head>
@@ -851,12 +851,12 @@ def get_declaration_form(token: str):
                             document.getElementById("gpsLat").value = currentGPS.lat;
                             document.getElementById("gpsLon").value = currentGPS.lon;
 
-                            gpsBtn.textContent = `✅ GPS: ${{currentGPS.lat.toFixed(5)}}, ${{currentGPS.lon.toFixed(5)}}`;
-                            gpsStatus.innerHTML = `<span style="color: green;">✓ Position précision: ±${{Math.round(position.coords.accuracy)}}m</span>`;
+                            gpsBtn.textContent = `✅ GPS: ${currentGPS.lat.toFixed(5)}}, ${currentGPS.lon.toFixed(5)}}`;
+                            gpsStatus.innerHTML = `<span style="color: green;">✓ Position précision: ±${Math.round(position.coords.accuracy)}}m</span>`;
                             gpsBtn.disabled = false;
                         },
                         (error) => {
-                            gpsStatus.innerHTML = `❌ Erreur: ${{error.message}}`;
+                            gpsStatus.innerHTML = `❌ Erreur: ${error.message}}`;
                             gpsBtn.textContent = "📍 Capturer mon GPS";
                             gpsBtn.disabled = false;
                         },
@@ -883,7 +883,7 @@ def get_declaration_form(token: str):
                     formData.append("token", token);
 
                     try {
-                        const response = await fetch(`${{apiUrl}}/declare/${{token}}/submit`, {
+                        const response = await fetch(`${apiUrl}}/declare/${token}}/submit`, {
                             method: "POST",
                             body: formData
                         });
@@ -895,7 +895,7 @@ def get_declaration_form(token: str):
                             document.getElementById("status").innerHTML = `
                                 <div style="color: green; padding: 15px; background: #e8f5e9; border-radius: 6px;">
                                     <h3>✅ Sinistre déclaré avec succès!</h3>
-                                    <p>Référence: ${{data.claim_id}}</p>
+                                    <p>Référence: ${data.claim_id}}</p>
                                     <p>Vous recevrez le rapport d'analyse par email.</p>
                                 </div>
                             `;
@@ -910,7 +910,7 @@ def get_declaration_form(token: str):
             </script>
         </body>
         </html>
-        """
+        """.replace("{token}", token)
         return Response(content=html, media_type="text/html")
 
     # If token is an existing claim, show claim details
