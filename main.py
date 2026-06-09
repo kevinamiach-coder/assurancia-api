@@ -221,7 +221,7 @@ def call_claude_vision(photo: dict, claim: dict) -> dict:
             "recommendation": "Format d'image non supporte (utilisez JPEG, PNG, GIF ou WEBP).",
         }
 
-    prompt = f"""Vous etes un expert en assurance specialise dans les degats des eaux.
+    prompt = f"""Vous etes un expert en assurance specialise dans les degats des eaux ET expert en detection de fraude par IA.
 Analysez cette photo de sinistre pour detecter fraude, photo IA, ou manipulation.
 
 Contexte declare par l'assure:
@@ -229,11 +229,17 @@ Contexte declare par l'assure:
 - Description: {claim['description']}
 - Adresse: {claim['address']}
 
-IMPORTANT - Verifiez SYSTEMATIQUEMENT:
-1. Cette photo est-elle generee par une IA ou manipulee/trafiquee?
-   - Cherchez: incohérences physiques, textures suspectes, distorsions, artefacts IA
-2. Les degats correspondent-ils au type declare?
-3. Y a-t-il des indices de fraude?
+⚠️ ALERTE FRAUDE - Verifiez STRICTEMENT:
+1. DETECTION IA/MANIPULATIONS PRIORITAIRE:
+   Signes d'image IA: textures lisses irrealistes, details flous ou hyper-precis, artefacts, doigts bizarres, reflets anormaux,
+   transitions non naturelles, details impossibles (reflexions illogiques, ombres incohérentes, perspectives bizarres,
+   textures repetitives, elements fantômes), couleurs trop parfaites, absence d'imperfections naturelles
+
+2. Si DOUTE = MARQUER COMME SUSPICIOUS/LIKELY_AI (penaliser au moindre doute!)
+3. Les degats correspondent-ils physiquement au type declare?
+4. Indices de fraude: photo stock, trop parfaite, pas authentique?
+
+SOYEZ SEVERE: Mieux vaut false positive que faux negatif (fraude!)
 
 Repondez UNIQUEMENT avec un objet JSON valide (aucun texte avant ou apres) avec EXACTEMENT ces champs:
 {{
@@ -307,15 +313,15 @@ Repondez UNIQUEMENT avec un objet JSON valide (aucun texte avant ou apres) avec 
                 analysis["fraud_indicators"] = []
             analysis["fraud_indicators"].append(f"GEOLOCALISATION: GPS a {distance}km de l'adresse (MISMATCH CRITIQUE)")
 
-    # Increase fraud score if AI-generated or manipulated photo detected
-    if analysis.get("is_ai_generated_or_manipulated") in ["suspicious", "likely_ai", "likely_manipulated"]:
-        ai_fraud_increase = {"suspicious": 20, "likely_ai": 50, "likely_manipulated": 60}.get(
-            analysis.get("is_ai_generated_or_manipulated"), 0
-        )
+    # Increase fraud score if AI-generated or manipulated photo detected (STRICT)
+    ai_status = analysis.get("is_ai_generated_or_manipulated", "").lower()
+    if ai_status in ["suspicious", "likely_ai", "likely_manipulated"]:
+        # BE STRICT: suspicious=30, likely_ai=70, likely_manipulated=80
+        ai_fraud_increase = {"suspicious": 30, "likely_ai": 70, "likely_manipulated": 80}.get(ai_status, 0)
         analysis["fraud_score"] = min(100, analysis.get("fraud_score", 0) + ai_fraud_increase)
         if "fraud_indicators" not in analysis or not isinstance(analysis["fraud_indicators"], list):
             analysis["fraud_indicators"] = []
-        analysis["fraud_indicators"].append(f"PHOTO FALSIFIEE: {analysis.get('is_ai_generated_or_manipulated').upper()}")
+        analysis["fraud_indicators"].append(f"⚠️ PHOTO SUSPECTE/FALSIFIEE: {ai_status.upper()} - SCORE +{ai_fraud_increase}pts")
 
     return analysis
 
