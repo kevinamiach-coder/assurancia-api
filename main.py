@@ -1327,13 +1327,12 @@ def get_declaration_form(token: str):
             </div>
 
             <script>
-                document.addEventListener("DOMContentLoaded", function() {
-                    const token = '{token}';
-                    const apiUrl = window.location.origin;
-                    let currentGPS = null;
+                const token = '{token}';
+                const apiUrl = window.location.origin;
+                let currentGPS = null;
 
-                    // GPS Capture Button
-                    document.getElementById("gpsBtn").addEventListener("click", (e) => {
+                // GPS Capture Button
+                document.getElementById("gpsBtn").addEventListener("click", (e) => {
                     e.preventDefault();
                     const gpsBtn = document.getElementById("gpsBtn");
                     const gpsStatus = document.getElementById("gpsStatus");
@@ -1421,7 +1420,6 @@ def get_declaration_form(token: str):
                         statusDiv.style.display = "block";
                         statusDiv.innerHTML = `<strong>❌ Erreur réseau:</strong> ${err.message}`;
                     }
-                    });
                 });
             </script>
         </body>
