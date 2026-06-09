@@ -828,50 +828,50 @@ def get_declaration_form(token: str):
                 let currentGPS = null;
 
                 // GPS Capture
-                document.getElementById('gpsBtn').addEventListener('click', (e) => {{
+                document.getElementById('gpsBtn').addEventListener('click', (e) => {
                     e.preventDefault();
                     const gpsBtn = document.getElementById('gpsBtn');
                     const gpsStatus = document.getElementById('gpsStatus');
 
-                    if (!navigator.geolocation) {{
+                    if (!navigator.geolocation) {
                         gpsStatus.innerHTML = '❌ Géolocalisation non supportée';
                         return;
-                    }}
+                    }
 
                     gpsBtn.disabled = true;
                     gpsBtn.textContent = '⏳ Localisation...';
                     gpsStatus.innerHTML = '';
 
                     navigator.geolocation.getCurrentPosition(
-                        (position) => {{
-                            currentGPS = {{
+                        (position) => {
+                            currentGPS = {
                                 lat: position.coords.latitude,
                                 lon: position.coords.longitude
-                            }};
+                            };
                             document.getElementById('gpsLat').value = currentGPS.lat;
                             document.getElementById('gpsLon').value = currentGPS.lon;
 
-                            gpsBtn.textContent = `✅ GPS: ${{currentGPS.lat.toFixed(5)}}, ${{currentGPS.lon.toFixed(5)}}`;
-                            gpsStatus.innerHTML = `<span style="color: green;">✓ Position précision: ±${{Math.round(position.coords.accuracy)}}m</span>`;
+                            gpsBtn.textContent = `✅ GPS: ${currentGPS.lat.toFixed(5)}, ${currentGPS.lon.toFixed(5)}`;
+                            gpsStatus.innerHTML = `<span style="color: green;">✓ Position précision: ±${Math.round(position.coords.accuracy)}m</span>`;
                             gpsBtn.disabled = false;
-                        }},
-                        (error) => {{
-                            gpsStatus.innerHTML = `❌ Erreur: ${{error.message}}`;
+                        },
+                        (error) => {
+                            gpsStatus.innerHTML = `❌ Erreur: ${error.message}`;
                             gpsBtn.textContent = '📍 Capturer mon GPS';
                             gpsBtn.disabled = false;
-                        }},
-                        {{ enableHighAccuracy: true, timeout: 10000 }}
+                        },
+                        { enableHighAccuracy: true, timeout: 10000 }
                     );
                 }});
 
-                document.getElementById('declarationForm').addEventListener('submit', async (e) => {{
+                document.getElementById('declarationForm').addEventListener('submit', async (e) => {
                     e.preventDefault();
 
                     // Vérifier que GPS est capturé
-                    if (!currentGPS) {{
-                        alert('❌ GPS OBLIGATOIRE pour déclarer un sinistre!\\nCliquez sur "Capturer mon GPS" et approuvez l\'accès.');
+                    if (!currentGPS) {
+                        alert('❌ GPS OBLIGATOIRE pour déclarer un sinistre!\nCliquez sur "Capturer mon GPS" et approuvez l\'accès.');
                         return;
-                    }}
+                    }
 
                     const formData = new FormData();
                     formData.append('user_email', document.getElementById('email').value);
@@ -882,31 +882,31 @@ def get_declaration_form(token: str):
                     formData.append('phone_gps_lon', currentGPS.lon);
                     formData.append('token', token);
 
-                    try {{
-                        const response = await fetch(`${{apiUrl}}/declare/${{token}}/submit`, {{
+                    try {
+                        const response = await fetch(`${apiUrl}/declare/${token}/submit`, {
                             method: 'POST',
                             body: formData
-                        }});
+                        });
 
                         const data = await response.json();
 
-                        if (response.ok) {{
+                        if (response.ok) {
                             document.getElementById('status').style.display = 'block';
                             document.getElementById('status').innerHTML = `
                                 <div style="color: green; padding: 15px; background: #e8f5e9; border-radius: 6px;">
                                     <h3>✅ Sinistre déclaré avec succès!</h3>
-                                    <p>Référence: ${{data.claim_id}}</p>
+                                    <p>Référence: ${data.claim_id}</p>
                                     <p>Vous recevrez le rapport d'analyse par email.</p>
                                 </div>
                             `;
                             document.getElementById('declarationForm').style.display = 'none';
-                        }} else {{
+                        } else {
                             alert('Erreur: ' + data.detail);
-                        }}
-                    }} catch (err) {{
+                        }
+                    } catch (err) {
                         alert('Erreur réseau: ' + err.message);
-                    }}
-                }});
+                    }
+                });
             </script>
         </body>
         </html>
