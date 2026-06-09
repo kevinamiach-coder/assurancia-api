@@ -836,6 +836,9 @@ async def dashboard():
                         <tr>
                             <th>Référence</th>
                             <th>Email</th>
+                            <th>Prénom</th>
+                            <th>Nom</th>
+                            <th>Téléphone</th>
                             <th>Type</th>
                             <th>Adresse</th>
                             <th>Fraude</th>
@@ -849,6 +852,9 @@ async def dashboard():
         for claim in claims_list:
             ref = claim.get("claim_id", "N/A")
             email = claim.get("user_email", "N/A")
+            firstname = claim.get("firstname", "N/A")
+            lastname = claim.get("lastname", "N/A")
+            phone = claim.get("phone", "N/A")
             damage = claim.get("damage_type", "N/A")
             address = claim.get("address", "N/A")
             fraud_score = claim.get("fraud_score", 0)
@@ -866,6 +872,9 @@ async def dashboard():
                         <tr>
                             <td class="reference">{ref}</td>
                             <td>{email}</td>
+                            <td>{firstname}</td>
+                            <td>{lastname}</td>
+                            <td>{phone}</td>
                             <td>{damage}</td>
                             <td>{address[:40]}...</td>
                             <td>{status} ({fraud_score})</td>
@@ -1457,6 +1466,24 @@ def get_declaration_form(token: str):
                             <input type="email" id="email" name="email" value="{client_email}" placeholder="votre@email.com" required>
                         </div>
 
+                        <!-- Prénom -->
+                        <div class="form-group">
+                            <label for="firstname">Prénom <span class="required">*</span></label>
+                            <input type="text" id="firstname" name="firstname" placeholder="Jean" required>
+                        </div>
+
+                        <!-- Nom -->
+                        <div class="form-group">
+                            <label for="lastname">Nom <span class="required">*</span></label>
+                            <input type="text" id="lastname" name="lastname" placeholder="Dupont" required>
+                        </div>
+
+                        <!-- Téléphone -->
+                        <div class="form-group">
+                            <label for="phone">Téléphone <span class="required">*</span></label>
+                            <input type="tel" id="phone" name="phone" placeholder="06 12 34 56 78" required>
+                        </div>
+
                         <!-- Damage Type -->
                         <div class="form-group">
                             <label for="damageType">Type de dégâts <span class="required">*</span></label>
@@ -1560,6 +1587,9 @@ def get_declaration_form(token: str):
 
                 const formData = new FormData();
                 formData.append("user_email", document.getElementById("email").value);
+                formData.append("firstname", document.getElementById("firstname").value);
+                formData.append("lastname", document.getElementById("lastname").value);
+                formData.append("phone", document.getElementById("phone").value);
                 formData.append("damage_type", document.getElementById("damageType").value);
                 formData.append("address", document.getElementById("address").value);
                 formData.append("description", document.getElementById("description").value);
@@ -1663,7 +1693,7 @@ def send_claim_links(claim_id: str):
 
 
 @app.post("/declare/{token}/submit")
-async def submit_declaration(token: str, user_email: str = "", damage_type: str = "", address: str = "", description: str = "", phone_gps_lat: str = None, phone_gps_lon: str = None):
+async def submit_declaration(token: str, user_email: str = "", firstname: str = "", lastname: str = "", phone: str = "", damage_type: str = "", address: str = "", description: str = "", phone_gps_lat: str = None, phone_gps_lon: str = None):
     """
     Client submits declaration via token link.
     Creates claim + stores insurer email + verifies GPS location.
@@ -1696,6 +1726,9 @@ async def submit_declaration(token: str, user_email: str = "", damage_type: str 
         "claim_id": claim_id,
         "unique_token": unique_token,
         "user_email": user_email,
+        "firstname": firstname,
+        "lastname": lastname,
+        "phone": phone,
         "damage_type": damage_type,
         "address": address,
         "description": description,
