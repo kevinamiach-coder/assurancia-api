@@ -898,7 +898,7 @@ async def dashboard():
 
             html += f"""
                         <tr>
-                            <td class="reference">{ref}</td>
+                            <td class="reference"><a href="/claim/{ref}" style="color: #60a5fa; text-decoration: none; cursor: pointer; font-weight: 600;">{ref}</a></td>
                             <td>{email}</td>
                             <td>{firstname}</td>
                             <td>{lastname}</td>
@@ -1663,6 +1663,290 @@ def get_declaration_form(token: str):
             return light_claim
 
     raise HTTPException(status_code=404, detail="Lien de déclaration invalide ou expiré")
+
+
+@app.get("/claim/{claim_id}")
+def view_claim_details(claim_id: str):
+    """View complete claim details with photos, analysis, GPS map, and fraud score."""
+    if claim_id not in claims_db:
+        raise HTTPException(status_code=404, detail="Sinistre non trouvé")
+
+    claim = claims_db[claim_id]
+    phone_gps = claim.get("phone_gps", {})
+    gps_lat = phone_gps.get("latitude", "N/A") if phone_gps else "N/A"
+    gps_lon = phone_gps.get("longitude", "N/A") if phone_gps else "N/A"
+    gps_verification = claim.get("gps_verification", {})
+
+    # Format fraud score
+    fraud_score = claim.get("fraud_score", 0)
+    if fraud_score < 20:
+        fraud_status = '<span class="badge low">✓ Fiable</span>'
+    elif fraud_score < 60:
+        fraud_status = '<span class="badge medium">⚠ Attention</span>'
+    else:
+        fraud_status = '<span class="badge high">🚨 Suspect</span>'
+
+    # Photos HTML
+    photos_html = ""
+    if claim.get("photos"):
+        photos_html = '<div class="photos-section"><h3>📸 Photos</h3><div class="photos-grid">'
+        for i, photo_data in enumerate(claim.get("photos", [])):
+            # Assuming photos are base64 encoded
+            if isinstance(photo_data, str) and photo_data.startswith("data:"):
+                photos_html += f'<img src="{photo_data}" alt="Photo {i+1}" class="claim-photo">'
+        photos_html += '</div></div>'
+
+    # Analysis HTML
+    analysis_html = ""
+    if claim.get("analysis"):
+        analysis = claim.get("analysis")
+        analysis_html = f"""
+        <div class="analysis-section">
+            <h3>🤖 Analyse Claude Vision</h3>
+            <div class="analysis-content">
+                {analysis.get("summary", "Pas de résumé")}
+            </div>
+        </div>
+        """
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Détail Sinistre - {claim_id}</title>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+                color: #e2e8f0;
+                padding: 40px 20px;
+                min-height: 100vh;
+            }}
+            .container {{
+                max-width: 1200px;
+                margin: 0 auto;
+            }}
+            header {{
+                margin-bottom: 40px;
+            }}
+            h1 {{
+                font-size: 32px;
+                background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                margin-bottom: 10px;
+            }}
+            .claim-info {{
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.9) 0%, rgba(51, 65, 85, 0.9) 100%);
+                border: 1px solid rgba(148, 163, 184, 0.2);
+                border-radius: 12px;
+                padding: 30px;
+                margin-bottom: 30px;
+                backdrop-filter: blur(10px);
+            }}
+            .info-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 20px;
+            }}
+            .info-item {{
+                border-left: 3px solid #3b82f6;
+                padding-left: 15px;
+            }}
+            .info-label {{
+                font-size: 12px;
+                color: #94a3b8;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 5px;
+            }}
+            .info-value {{
+                font-size: 16px;
+                color: #f1f5f9;
+                font-weight: 600;
+            }}
+            .badge {{
+                display: inline-block;
+                padding: 6px 12px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            .badge.low {{
+                background: rgba(34, 197, 94, 0.2);
+                color: #86efac;
+            }}
+            .badge.medium {{
+                background: rgba(248, 113, 113, 0.2);
+                color: #fca5a5;
+            }}
+            .badge.high {{
+                background: rgba(239, 68, 68, 0.2);
+                color: #fca5a5;
+            }}
+            .section {{
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.9) 0%, rgba(51, 65, 85, 0.9) 100%);
+                border: 1px solid rgba(148, 163, 184, 0.2);
+                border-radius: 12px;
+                padding: 30px;
+                margin-bottom: 30px;
+                backdrop-filter: blur(10px);
+            }}
+            h3 {{
+                font-size: 20px;
+                margin-bottom: 20px;
+                color: #60a5fa;
+            }}
+            #map {{
+                width: 100%;
+                height: 400px;
+                border-radius: 8px;
+                border: 2px solid rgba(59, 130, 246, 0.3);
+            }}
+            .photos-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+                gap: 15px;
+                margin-top: 20px;
+            }}
+            .claim-photo {{
+                width: 100%;
+                height: 200px;
+                object-fit: cover;
+                border-radius: 8px;
+                border: 2px solid rgba(148, 163, 184, 0.2);
+            }}
+            .analysis-content {{
+                background: rgba(59, 130, 246, 0.05);
+                border: 1px solid rgba(59, 130, 246, 0.2);
+                border-radius: 8px;
+                padding: 20px;
+                color: #cbd5e1;
+                line-height: 1.6;
+            }}
+            .gps-status {{
+                padding: 15px;
+                border-radius: 8px;
+                margin-top: 15px;
+                font-size: 14px;
+            }}
+            .gps-status.verified {{
+                background: rgba(34, 197, 94, 0.1);
+                border: 1px solid rgba(34, 197, 94, 0.3);
+                color: #86efac;
+            }}
+            .gps-status.mismatch {{
+                background: rgba(239, 68, 68, 0.1);
+                border: 1px solid rgba(239, 68, 68, 0.3);
+                color: #fca5a5;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>🔐 Détail du Sinistre</h1>
+                <p style="color: #cbd5e1; font-size: 16px;">Référence: <strong>{claim_id}</strong></p>
+            </header>
+
+            <div class="claim-info">
+                <h3 style="color: #60a5fa; margin-bottom: 20px;">📋 Informations Principales</h3>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Référence</div>
+                        <div class="info-value">{claim_id}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Email</div>
+                        <div class="info-value">{claim.get('user_email', 'N/A')}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Prénom</div>
+                        <div class="info-value">{claim.get('firstname', 'N/A')}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Nom</div>
+                        <div class="info-value">{claim.get('lastname', 'N/A')}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Téléphone</div>
+                        <div class="info-value">{claim.get('phone', 'N/A')}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Type de Dégâts</div>
+                        <div class="info-value">{claim.get('damage_type', 'N/A')}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Adresse</div>
+                        <div class="info-value">{claim.get('address', 'N/A')}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Score Fraude</div>
+                        <div class="info-value">{fraud_status} ({fraud_score})</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Date</div>
+                        <div class="info-value">{claim.get('created_at', 'N/A')[:10]}</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h3>📍 Géolocalisation</h3>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Latitude</div>
+                        <div class="info-value">{gps_lat}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Longitude</div>
+                        <div class="info-value">{gps_lon}</div>
+                    </div>
+                </div>
+                <div id="map"></div>
+                <div class="gps-status {'verified' if gps_verification.get('match') else 'mismatch'}">
+                    {'✓ GPS vérifié avec l\'adresse' if gps_verification.get('match') else '⚠ GPS ne correspond pas à l\'adresse'}
+                    {f" (Distance: {gps_verification.get('distance_km', 'N/A')} km)" if gps_verification else ""}
+                </div>
+            </div>
+
+            <div class="section">
+                <h3>📝 Description</h3>
+                <p style="color: #cbd5e1; line-height: 1.6;">{claim.get('description', 'Pas de description')}</p>
+            </div>
+
+            {photos_html}
+            {analysis_html}
+        </div>
+
+        <script>
+        // Initialize map
+        const map = L.map('map').setView([{gps_lat}, {gps_lon}], 13);
+        L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+            attribution: '© OpenStreetMap contributors',
+            maxZoom: 19
+        }}).addTo(map);
+
+        // Add marker
+        L.marker([{gps_lat}, {gps_lon}]).addTo(map)
+            .bindPopup('📍 Position du sinistre')
+            .openPopup();
+        </script>
+    </body>
+    </html>
+    """
+
+    return Response(content=html, media_type="text/html")
 
 
 @app.get("/report/{token}")
