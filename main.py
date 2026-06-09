@@ -1650,7 +1650,7 @@ def get_declaration_form(token: str):
             </script>
         </body>
         </html>
-        """.replace("{token}", token).replace("{client_email}", client_email)
+        """.replace("{token}", token).replace("{client_email}", client_email or "")
         return Response(content=html, media_type="text/html")
 
     # If token is an existing claim, show claim details
