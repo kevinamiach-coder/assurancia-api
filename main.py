@@ -10,6 +10,7 @@ from io import BytesIO
 import hashlib
 import uuid
 from datetime import datetime
+import secrets
 import os
 import base64
 import json
@@ -30,6 +31,7 @@ client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 # In-memory storage. NOTE: Render free tier sleeps after inactivity and wipes
 # this dict on restart. Acceptable for a demo; migrate to a real DB for prod.
 claims_db: dict = {}
+token_to_claim: dict = {}  # Mapping: unique_token -> claim_id
 
 # Anthropic Vision API only accepts these media types.
 SUPPORTED_MEDIA_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -509,6 +511,7 @@ def health():
 def create_claim(claim: ClaimCreate):
     """Create a new claim, geocode its address, verify GPS phone vs address."""
     claim_id = f"CLM-{datetime.now().year}-{uuid.uuid4().hex[:6].upper()}"
+    unique_token = secrets.token_urlsafe(32)  # Unique token for sharing
 
     location = geocode_address(claim.address)
 
@@ -524,6 +527,7 @@ def create_claim(claim: ClaimCreate):
 
     claim_data = {
         "claim_id": claim_id,
+        "unique_token": unique_token,  # Unique shareable token
         "user_email": claim.user_email,
         "damage_type": claim.damage_type,
         "address": claim.address,
@@ -539,6 +543,7 @@ def create_claim(claim: ClaimCreate):
     }
 
     claims_db[claim_id] = claim_data
+    token_to_claim[unique_token] = claim_id  # Map token to claim
 
     # Log GPS verification result
     if gps_verification:
@@ -668,6 +673,85 @@ def download_report(claim_id: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ========== TOKEN-BASED ROUTES (for sharing with clients/insurers) ==========
+
+@app.get("/declare/{token}")
+def get_claim_by_token(token: str):
+    """Access claim by unique token (for client sharing)."""
+    if token not in token_to_claim:
+        raise HTTPException(status_code=404, detail="Lien de declaration invalide ou expiré")
+
+    claim_id = token_to_claim[token]
+    claim = claims_db.get(claim_id)
+    if not claim:
+        raise HTTPException(status_code=404, detail="Sinistre non trouvé")
+
+    # Return claim details without heavy base64 photos
+    light_claim = {k: v for k, v in claim.items() if k != "photos"}
+    light_claim["photo_count"] = len(claim.get("photos", []))
+    light_claim["token"] = token  # Include token for reference
+
+    return light_claim
+
+
+@app.get("/report/{token}")
+def download_report_by_token(token: str):
+    """Download PDF report using unique token (for client/insurer sharing)."""
+    if token not in token_to_claim:
+        raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
+
+    claim_id = token_to_claim[token]
+    claim = claims_db.get(claim_id)
+    if not claim:
+        raise HTTPException(status_code=404, detail="Sinistre non trouvé")
+
+    pdf_bytes = build_claim_pdf(claim)
+    filename = f"rapport_{claim_id}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/claims/{claim_id}/send-links")
+def send_claim_links(claim_id: str):
+    """Generate and return shareable links for claim (PDF ready to send to client + insurer)."""
+    if claim_id not in claims_db:
+        raise HTTPException(status_code=404, detail="Sinistre non trouvé")
+
+    claim = claims_db[claim_id]
+    token = claim.get("unique_token")
+
+    if not token:
+        raise HTTPException(status_code=400, detail="Token non disponible")
+
+    # Base URL (will be Render in prod)
+    base_url = os.getenv("APP_URL", "https://assurancia-api-2.onrender.com")
+
+    return {
+        "claim_id": claim_id,
+        "client_email": claim.get("user_email"),
+        "links": {
+            "declare": f"{base_url}/declare/{token}",
+            "download_pdf": f"{base_url}/report/{token}",
+        },
+        "message": "Liens uniques générés. Envoyez ces liens au client et à l'assurance/courtier.",
+        "emails": {
+            "client": {
+                "to": claim.get("user_email"),
+                "subject": f"Votre sinistre {claim_id} - Accès à votre déclaration",
+                "body": f"Cliquez ici pour accéder à votre déclaration: {base_url}/declare/{token}\nTélécharger le rapport PDF: {base_url}/report/{token}"
+            },
+            "insurer": {
+                "to": "courtier@example.com",  # Replace with actual courtier email
+                "subject": f"Sinistre reçu: {claim_id}",
+                "body": f"Rapport disponible: {base_url}/report/{token}"
+            }
+        }
+    }
 
 
 # ----------------------------------------------------------------------------
