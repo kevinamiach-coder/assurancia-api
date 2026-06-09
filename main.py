@@ -1712,8 +1712,8 @@ async def submit_declaration(token: str, user_email: str = "", damage_type: str 
 
     claims_db[claim_id] = claim_data
     token_to_claim[unique_token] = claim_id
-    declaration_links[token]["status"] = "completed"
-    declaration_links[token]["claim_id"] = claim_id
+    # Token remains valid for reuse - don't mark as "completed"
+    # This allows the same token to be used for multiple declarations
 
     # Save to MongoDB
     try:
