@@ -1302,6 +1302,7 @@ def get_declaration_form(token: str):
 
                 input[type="text"],
                 input[type="email"],
+                input[type="tel"],
                 select,
                 textarea {
                     width: 100%;
@@ -1317,12 +1318,14 @@ def get_declaration_form(token: str):
 
                 input[type="text"]::placeholder,
                 input[type="email"]::placeholder,
+                input[type="tel"]::placeholder,
                 textarea::placeholder {
                     color: #64748b;
                 }
 
                 input[type="text"]:focus,
                 input[type="email"]:focus,
+                input[type="tel"]:focus,
                 select:focus,
                 textarea:focus {
                     outline: none;
