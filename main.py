@@ -1715,6 +1715,12 @@ async def submit_declaration(token: str, user_email: str = "", damage_type: str 
     declaration_links[token]["status"] = "completed"
     declaration_links[token]["claim_id"] = claim_id
 
+    # Save to MongoDB
+    try:
+        claims_collection.insert_one(claim_data)
+    except:
+        pass
+
     return {
         "claim_id": claim_id,
         "unique_token": unique_token,
