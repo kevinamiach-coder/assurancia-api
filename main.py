@@ -221,25 +221,29 @@ def call_claude_vision(photo: dict, claim: dict) -> dict:
             "recommendation": "Format d'image non supporte (utilisez JPEG, PNG, GIF ou WEBP).",
         }
 
-    prompt = f"""Vous etes un expert en assurance specialise dans les degats des eaux ET expert en detection de fraude par IA.
-Analysez cette photo de sinistre pour detecter fraude, photo IA, ou manipulation.
+    prompt = f"""Vous etes expert assurance multi-domaine (eau, automobile, cambriolage, incendie) + expert detection fraude.
+Analysez cette photo de sinistre pour detecter fraude, incohérence, photo IA.
 
 Contexte declare par l'assure:
-- Type de degat: {claim['damage_type']}
+- Type de degat DECLARE: {claim['damage_type']}
 - Description: {claim['description']}
 - Adresse: {claim['address']}
 
 ⚠️ ALERTE FRAUDE - Verifiez STRICTEMENT:
-1. DETECTION IA/MANIPULATIONS PRIORITAIRE:
-   Signes d'image IA: textures lisses irrealistes, details flous ou hyper-precis, artefacts, doigts bizarres, reflets anormaux,
-   transitions non naturelles, details impossibles (reflexions illogiques, ombres incohérentes, perspectives bizarres,
-   textures repetitives, elements fantômes), couleurs trop parfaites, absence d'imperfections naturelles
+1. TYPE DÉGAT COHERENT?
+   - La photo montre-t-elle le TYPE de dégât DÉCLARÉ?
+   - Exemple: "accident_circulation" mais photo de fuite d'eau = FRAUDE!
+   - Exemple: "cambriolage" mais photo de dégât grêle = FRAUDE!
+   → TRÈS GRAVE si mismatch type = tentative fraude massive!
 
-2. Si DOUTE = MARQUER COMME SUSPICIOUS/LIKELY_AI (penaliser au moindre doute!)
-3. Les degats correspondent-ils physiquement au type declare?
-4. Indices de fraude: photo stock, trop parfaite, pas authentique?
+2. DETECTION IA/MANIPULATIONS:
+   Signes d'image IA: textures lisses irrealistes, details flous/hyper-precis, artefacts, doigts bizarres, reflets anormaux,
+   transitions non naturelles, details impossibles, textures repetitives, couleurs trop parfaites
 
-SOYEZ SEVERE: Mieux vaut false positive que faux negatif (fraude!)
+3. Description COHERENTE avec photo visible?
+   - La description correspond-elle aux dégâts visibles?
+
+4. SOYEZ SEVERE: Mieux vaut false positive que laisser passer fraude!
 
 Repondez UNIQUEMENT avec un objet JSON valide (aucun texte avant ou apres) avec EXACTEMENT ces champs:
 {{
@@ -312,6 +316,43 @@ Repondez UNIQUEMENT avec un objet JSON valide (aucun texte avant ou apres) avec 
             if "fraud_indicators" not in analysis or not isinstance(analysis["fraud_indicators"], list):
                 analysis["fraud_indicators"] = []
             analysis["fraud_indicators"].append(f"GEOLOCALISATION: GPS a {distance}km de l'adresse (MISMATCH CRITIQUE)")
+
+    # Check damage type coherence (CRITICAL FRAUD CHECK)
+    detected_type = analysis.get("detected_damage_type", "").lower()
+    declared_type = claim.get("damage_type", "").lower()
+
+    # Map damage types to categories for fuzzy matching
+    type_categories = {
+        # Water damage
+        "fuite": ["water", "fuite", "leak"],
+        "inondation": ["water", "flood", "inondation"],
+        "rupture_canalisation": ["water", "pipe", "canalisation"],
+        "infiltration_toiture": ["water", "roof", "infiltration", "toiture"],
+        # Automotive
+        "accident_circulation": ["car", "accident", "collision", "vehicle"],
+        "vandalisme_auto": ["car", "vandalism", "scratches", "automobile"],
+        "vol_auto": ["car", "theft", "vol"],
+        # Burglary
+        "effraction": ["break-in", "effraction", "intrusion"],
+        "vol": ["theft", "vol"],
+        # Fire
+        "incendie": ["fire", "incendie", "burn"],
+        # Weather
+        "grele": ["hail", "grele"],
+        "tempete": ["storm", "tempete", "wind"],
+    }
+
+    # Check if declared type matches detected type
+    declared_keywords = type_categories.get(declared_type, [declared_type.lower()])
+    type_mismatch = not any(keyword in detected_type for keyword in declared_keywords)
+
+    if type_mismatch and detected_type != "autre":
+        # CRITICAL: Type mismatch = major fraud red flag
+        mismatch_penalty = 70  # VERY HIGH penalty for type mismatch
+        analysis["fraud_score"] = min(100, analysis.get("fraud_score", 0) + mismatch_penalty)
+        if "fraud_indicators" not in analysis or not isinstance(analysis["fraud_indicators"], list):
+            analysis["fraud_indicators"] = []
+        analysis["fraud_indicators"].append(f"🚨 FRAUD MAJEURE: Type déclaré '{declared_type}' ≠ Type détecté '{detected_type}' - SCORE +{mismatch_penalty}pts")
 
     # Increase fraud score if AI-generated or manipulated photo detected (STRICT)
     ai_status = analysis.get("is_ai_generated_or_manipulated", "").lower()
