@@ -828,19 +828,19 @@ def get_declaration_form(token: str):
                 let currentGPS = null;
 
                 // GPS Capture
-                document.getElementById('gpsBtn').addEventListener('click', (e) => {
+                document.getElementById("gpsBtn").addEventListener("click", (e) => {
                     e.preventDefault();
-                    const gpsBtn = document.getElementById('gpsBtn');
-                    const gpsStatus = document.getElementById('gpsStatus');
+                    const gpsBtn = document.getElementById("gpsBtn");
+                    const gpsStatus = document.getElementById("gpsStatus");
 
                     if (!navigator.geolocation) {
-                        gpsStatus.innerHTML = '❌ Géolocalisation non supportée';
+                        gpsStatus.innerHTML = "❌ Géolocalisation non supportée";
                         return;
                     }
 
                     gpsBtn.disabled = true;
-                    gpsBtn.textContent = '⏳ Localisation...';
-                    gpsStatus.innerHTML = '';
+                    gpsBtn.textContent = "⏳ Localisation...";
+                    gpsStatus.innerHTML = "";
 
                     navigator.geolocation.getCurrentPosition(
                         (position) => {
@@ -848,8 +848,8 @@ def get_declaration_form(token: str):
                                 lat: position.coords.latitude,
                                 lon: position.coords.longitude
                             };
-                            document.getElementById('gpsLat').value = currentGPS.lat;
-                            document.getElementById('gpsLon').value = currentGPS.lon;
+                            document.getElementById("gpsLat").value = currentGPS.lat;
+                            document.getElementById("gpsLon").value = currentGPS.lon;
 
                             gpsBtn.textContent = `✅ GPS: ${currentGPS.lat.toFixed(5)}, ${currentGPS.lon.toFixed(5)}`;
                             gpsStatus.innerHTML = `<span style="color: green;">✓ Position précision: ±${Math.round(position.coords.accuracy)}m</span>`;
@@ -857,54 +857,54 @@ def get_declaration_form(token: str):
                         },
                         (error) => {
                             gpsStatus.innerHTML = `❌ Erreur: ${error.message}`;
-                            gpsBtn.textContent = '📍 Capturer mon GPS';
+                            gpsBtn.textContent = "📍 Capturer mon GPS";
                             gpsBtn.disabled = false;
                         },
                         { enableHighAccuracy: true, timeout: 10000 }
                     );
                 }});
 
-                document.getElementById('declarationForm').addEventListener('submit', async (e) => {
+                document.getElementById("declarationForm").addEventListener("submit", async (e) => {
                     e.preventDefault();
 
                     // Vérifier que GPS est capturé
                     if (!currentGPS) {
-                        alert('❌ GPS OBLIGATOIRE pour déclarer un sinistre!\nCliquez sur "Capturer mon GPS" et approuvez l\'accès.');
+                        alert("❌ GPS OBLIGATOIRE pour déclarer un sinistre!\nCliquez sur \"Capturer mon GPS\" et approuvez l'accès.");
                         return;
                     }
 
                     const formData = new FormData();
-                    formData.append('user_email', document.getElementById('email').value);
-                    formData.append('damage_type', document.getElementById('damageType').value);
-                    formData.append('address', document.getElementById('address').value);
-                    formData.append('description', document.getElementById('description').value);
-                    formData.append('phone_gps_lat', currentGPS.lat);
-                    formData.append('phone_gps_lon', currentGPS.lon);
-                    formData.append('token', token);
+                    formData.append("user_email", document.getElementById("email").value);
+                    formData.append("damage_type", document.getElementById("damageType").value);
+                    formData.append("address", document.getElementById("address").value);
+                    formData.append("description", document.getElementById("description").value);
+                    formData.append("phone_gps_lat", currentGPS.lat);
+                    formData.append("phone_gps_lon", currentGPS.lon);
+                    formData.append("token", token);
 
                     try {
                         const response = await fetch(`${apiUrl}/declare/${token}/submit`, {
-                            method: 'POST',
+                            method: "POST",
                             body: formData
                         });
 
                         const data = await response.json();
 
                         if (response.ok) {
-                            document.getElementById('status').style.display = 'block';
-                            document.getElementById('status').innerHTML = `
+                            document.getElementById("status").style.display = "block";
+                            document.getElementById("status").innerHTML = `
                                 <div style="color: green; padding: 15px; background: #e8f5e9; border-radius: 6px;">
                                     <h3>✅ Sinistre déclaré avec succès!</h3>
                                     <p>Référence: ${data.claim_id}</p>
                                     <p>Vous recevrez le rapport d'analyse par email.</p>
                                 </div>
                             `;
-                            document.getElementById('declarationForm').style.display = 'none';
+                            document.getElementById("declarationForm").style.display = "none";
                         } else {
-                            alert('Erreur: ' + data.detail);
+                            alert("Erreur: " + data.detail);
                         }
                     } catch (err) {
-                        alert('Erreur réseau: ' + err.message);
+                        alert("Erreur réseau: " + err.message);
                     }
                 });
             </script>
