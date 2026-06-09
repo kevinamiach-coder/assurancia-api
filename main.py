@@ -222,12 +222,18 @@ def call_claude_vision(photo: dict, claim: dict) -> dict:
         }
 
     prompt = f"""Vous etes un expert en assurance specialise dans les degats des eaux.
-Analysez cette photo de sinistre.
+Analysez cette photo de sinistre pour detecter fraude, photo IA, ou manipulation.
 
 Contexte declare par l'assure:
 - Type de degat: {claim['damage_type']}
 - Description: {claim['description']}
 - Adresse: {claim['address']}
+
+IMPORTANT - Verifiez SYSTEMATIQUEMENT:
+1. Cette photo est-elle generee par une IA ou manipulee/trafiquee?
+   - Cherchez: incohérences physiques, textures suspectes, distorsions, artefacts IA
+2. Les degats correspondent-ils au type declare?
+3. Y a-t-il des indices de fraude?
 
 Repondez UNIQUEMENT avec un objet JSON valide (aucun texte avant ou apres) avec EXACTEMENT ces champs:
 {{
@@ -236,6 +242,8 @@ Repondez UNIQUEMENT avec un objet JSON valide (aucun texte avant ou apres) avec 
   "estimated_cost_eur": <nombre entier en euros>,
   "leak_location": "description courte du point d'impact ou de la source visible",
   "visible_damage": "description detaillee des degats visibles sur la photo",
+  "is_ai_generated_or_manipulated": "genuine | suspicious | likely_ai | likely_manipulated",
+  "ai_detection_confidence": "high | medium | low",
   "fraud_score": <entier 0-100, probabilite de fraude/incoherence>,
   "fraud_indicators": ["liste courte d'indices suspects, ou liste vide"],
   "consistency_with_declaration": "coherent | partiellement_coherent | incoherent",
@@ -284,16 +292,30 @@ Repondez UNIQUEMENT avec un objet JSON valide (aucun texte avant ou apres) avec 
             "confidence": "low",
         }
 
-    # Check GPS location match (anti-fraud)
-    gps_check = check_gps_location_match(claim.get("location"), photo.get("gps"))
+    # Check GPS location match (anti-fraud) - using phone GPS if available
+    phone_gps = claim.get("phone_gps")
+    gps_check = check_gps_location_match(claim.get("location"), phone_gps)
     analysis["location_verification"] = gps_check
 
-    # Increase fraud score if location mismatch detected
+    # Increase fraud score based on location mismatch
     if gps_check["flag"] == "LOCATION_MISMATCH":
-        analysis["fraud_score"] = min(100, analysis.get("fraud_score", 0) + 25)
+        distance = gps_check.get("distance_km", 0)
+        if distance > 0.1:  # > 100 meters
+            fraud_increase = min(40, int(distance * 2))  # Increase by 2 points per km, max 40
+            analysis["fraud_score"] = min(100, analysis.get("fraud_score", 0) + fraud_increase)
+            if "fraud_indicators" not in analysis or not isinstance(analysis["fraud_indicators"], list):
+                analysis["fraud_indicators"] = []
+            analysis["fraud_indicators"].append(f"GEOLOCALISATION: GPS a {distance}km de l'adresse (MISMATCH CRITIQUE)")
+
+    # Increase fraud score if AI-generated or manipulated photo detected
+    if analysis.get("is_ai_generated_or_manipulated") in ["suspicious", "likely_ai", "likely_manipulated"]:
+        ai_fraud_increase = {"suspicious": 20, "likely_ai": 50, "likely_manipulated": 60}.get(
+            analysis.get("is_ai_generated_or_manipulated"), 0
+        )
+        analysis["fraud_score"] = min(100, analysis.get("fraud_score", 0) + ai_fraud_increase)
         if "fraud_indicators" not in analysis or not isinstance(analysis["fraud_indicators"], list):
             analysis["fraud_indicators"] = []
-        analysis["fraud_indicators"].append(f"GEOLOCALISATION: Photo a {gps_check['distance_km']}km de l'adresse declaree")
+        analysis["fraud_indicators"].append(f"PHOTO FALSIFIEE: {analysis.get('is_ai_generated_or_manipulated').upper()}")
 
     return analysis
 
