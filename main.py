@@ -1681,39 +1681,76 @@ def view_claim_details(claim_id: str):
     if not claim:
         raise HTTPException(status_code=404, detail="Sinistre non trouvé")
 
-    phone_gps = claim.get("phone_gps", {})
-    gps_lat = phone_gps.get("latitude", "N/A") if phone_gps else "N/A"
-    gps_lon = phone_gps.get("longitude", "N/A") if phone_gps else "N/A"
-    gps_verification = claim.get("gps_verification", {})
+    # --- GPS coordinates (defensive: phone_gps may be None or missing keys) ---
+    phone_gps = claim.get("phone_gps") or {}
+    gps_lat = phone_gps.get("latitude", "N/A")
+    gps_lon = phone_gps.get("longitude", "N/A")
+    if gps_lat is None:
+        gps_lat = "N/A"
+    if gps_lon is None:
+        gps_lon = "N/A"
 
-    # Format fraud score
+    # gps_verification may be None or a dict
+    gps_verification = claim.get("gps_verification") or {}
+    gps_match = bool(gps_verification.get("match")) if gps_verification else False
+
+    # GPS status block (built outside the f-string to avoid backslash-in-f-string errors)
+    gps_status_class = "verified" if gps_match else "mismatch"
+    if gps_match:
+        gps_status_text = "✓ GPS vérifié avec l'adresse"
+    else:
+        gps_status_text = "⚠ GPS ne correspond pas à l'adresse"
+    if gps_verification and gps_verification.get("distance_km") is not None:
+        gps_distance_text = f" (Distance: {gps_verification.get('distance_km')} km)"
+    else:
+        gps_distance_text = ""
+
+    # JS-safe numeric strings for the map (avoid 'N/A' breaking parseFloat silently is fine,
+    # but guard against None too)
+    js_lat = gps_lat if gps_lat not in (None, "N/A") else ""
+    js_lon = gps_lon if gps_lon not in (None, "N/A") else ""
+
+    # --- Fraud score (defensive: may be None or non-numeric) ---
     fraud_score = claim.get("fraud_score", 0)
+    try:
+        fraud_score = float(fraud_score)
+    except (TypeError, ValueError):
+        fraud_score = 0
     if fraud_score < 20:
         fraud_status = '<span class="badge low">✓ Fiable</span>'
     elif fraud_score < 60:
         fraud_status = '<span class="badge medium">⚠ Attention</span>'
     else:
         fraud_status = '<span class="badge high">🚨 Suspect</span>'
+    fraud_score_display = int(fraud_score) if fraud_score == int(fraud_score) else fraud_score
 
-    # Photos HTML
+    # --- Date (defensive: created_at may be None / missing / short) ---
+    created_at = claim.get("created_at")
+    date_display = str(created_at)[:10] if created_at else "N/A"
+
+    # --- Photos HTML ---
     photos_html = ""
-    if claim.get("photos"):
-        photos_html = '<div class="photos-section"><h3>📸 Photos</h3><div class="photos-grid">'
-        for i, photo_data in enumerate(claim.get("photos", [])):
-            # Assuming photos are base64 encoded
+    photos = claim.get("photos") or []
+    if photos:
+        photos_html = '<div class="section"><h3>📸 Photos</h3><div class="photos-grid">'
+        for i, photo_data in enumerate(photos):
             if isinstance(photo_data, str) and photo_data.startswith("data:"):
                 photos_html += f'<img src="{photo_data}" alt="Photo {i+1}" class="claim-photo">'
         photos_html += '</div></div>'
 
-    # Analysis HTML
+    # --- Analysis HTML (defensive: analysis may be a dict, a string, or None) ---
     analysis_html = ""
-    if claim.get("analysis"):
-        analysis = claim.get("analysis")
+    analysis = claim.get("analysis")
+    if analysis:
+        if isinstance(analysis, dict):
+            analysis_text = analysis.get("summary", "Pas de résumé")
+        else:
+            analysis_text = str(analysis)
         analysis_html = f"""
-        <div class="analysis-section">
+        <div class="section">
             <h3>🤖 Analyse Claude Vision</h3>
             <div class="analysis-content">
-                {analysis.get("summary", "Pas de résumé")}
+                {analysis_text}
             </div>
         </div>
         """
@@ -1901,11 +1938,11 @@ def view_claim_details(claim_id: str):
                     </div>
                     <div class="info-item">
                         <div class="info-label">Score Fraude</div>
-                        <div class="info-value">{fraud_status} ({fraud_score})</div>
+                        <div class="info-value">{fraud_status} ({fraud_score_display})</div>
                     </div>
                     <div class="info-item">
                         <div class="info-label">Date</div>
-                        <div class="info-value">{claim.get('created_at', 'N/A')[:10]}</div>
+                        <div class="info-value">{date_display}</div>
                     </div>
                 </div>
             </div>
@@ -1923,9 +1960,8 @@ def view_claim_details(claim_id: str):
                     </div>
                 </div>
                 <div id="map"></div>
-                <div class="gps-status {'verified' if gps_verification.get('match') else 'mismatch'}">
-                    {'✓ GPS vérifié avec l\'adresse' if gps_verification.get('match') else '⚠ GPS ne correspond pas à l\'adresse'}
-                    {f" (Distance: {gps_verification.get('distance_km', 'N/A')} km)" if gps_verification else ""}
+                <div class="gps-status {gps_status_class}">
+                    {gps_status_text}{gps_distance_text}
                 </div>
             </div>
 
@@ -1940,16 +1976,21 @@ def view_claim_details(claim_id: str):
 
         <script>
         // Initialize map
-        const map = L.map('map').setView([{gps_lat}, {gps_lon}], 13);
-        L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
-            attribution: '© OpenStreetMap contributors',
-            maxZoom: 19
-        }}).addTo(map);
+        var lat = parseFloat('{js_lat}');
+        var lon = parseFloat('{js_lon}');
 
-        // Add marker
-        L.marker([{gps_lat}, {gps_lon}]).addTo(map)
-            .bindPopup('📍 Position du sinistre')
-            .openPopup();
+        if (!isNaN(lat) && !isNaN(lon)) {{
+            const map = L.map('map').setView([lat, lon], 13);
+            L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+                attribution: '© OpenStreetMap contributors',
+                maxZoom: 19
+            }}).addTo(map);
+            L.marker([lat, lon]).addTo(map)
+                .bindPopup('📍 Position du sinistre')
+                .openPopup();
+        }} else {{
+            document.getElementById('map').innerHTML = '<p style="padding: 20px; text-align: center; color: #cbd5e1;">GPS non disponible</p>';
+        }}
         </script>
     </body>
     </html>
