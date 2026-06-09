@@ -764,6 +764,14 @@ def get_declaration_form(token: str):
 
                     <form id="declarationForm">
                         <div class="form-group">
+                            <label for="gpsBtn">📍 Géolocalisation <span class="required">*OBLIGATOIRE</span></label>
+                            <button type="button" id="gpsBtn" style="width: 100%; background: linear-gradient(135deg, #17a2b8 0%, #138496 100%); color: white; padding: 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                                📍 Capturer mon GPS (obligatoire)
+                            </button>
+                            <div id="gpsStatus" style="margin-top: 8px; font-size: 0.85em; color: #666;"></div>
+                        </div>
+
+                        <div class="form-group">
                             <label for="email">Email <span class="required">*</span></label>
                             <input type="email" id="email" name="email" value="{client_email}" required>
                         </div>
@@ -804,6 +812,9 @@ def get_declaration_form(token: str):
                             <input type="file" id="photos" name="photos" multiple accept="image/*">
                         </div>
 
+                        <input type="hidden" id="gpsLat" name="gpsLat">
+                        <input type="hidden" id="gpsLon" name="gpsLon">
+
                         <button type="submit">📤 Soumettre la déclaration</button>
                     </form>
 
@@ -814,15 +825,61 @@ def get_declaration_form(token: str):
             <script>
                 const token = '{token}';
                 const apiUrl = window.location.origin;
+                let currentGPS = null;
+
+                // GPS Capture
+                document.getElementById('gpsBtn').addEventListener('click', (e) => {{
+                    e.preventDefault();
+                    const gpsBtn = document.getElementById('gpsBtn');
+                    const gpsStatus = document.getElementById('gpsStatus');
+
+                    if (!navigator.geolocation) {{
+                        gpsStatus.innerHTML = '❌ Géolocalisation non supportée';
+                        return;
+                    }}
+
+                    gpsBtn.disabled = true;
+                    gpsBtn.textContent = '⏳ Localisation...';
+                    gpsStatus.innerHTML = '';
+
+                    navigator.geolocation.getCurrentPosition(
+                        (position) => {{
+                            currentGPS = {{
+                                lat: position.coords.latitude,
+                                lon: position.coords.longitude
+                            }};
+                            document.getElementById('gpsLat').value = currentGPS.lat;
+                            document.getElementById('gpsLon').value = currentGPS.lon;
+
+                            gpsBtn.textContent = `✅ GPS: ${{currentGPS.lat.toFixed(5)}}, ${{currentGPS.lon.toFixed(5)}}`;
+                            gpsStatus.innerHTML = `<span style="color: green;">✓ Position précision: ±${{Math.round(position.coords.accuracy)}}m</span>`;
+                            gpsBtn.disabled = false;
+                        }},
+                        (error) => {{
+                            gpsStatus.innerHTML = `❌ Erreur: ${{error.message}}`;
+                            gpsBtn.textContent = '📍 Capturer mon GPS';
+                            gpsBtn.disabled = false;
+                        }},
+                        {{ enableHighAccuracy: true, timeout: 10000 }}
+                    );
+                }});
 
                 document.getElementById('declarationForm').addEventListener('submit', async (e) => {{
                     e.preventDefault();
+
+                    // Vérifier que GPS est capturé
+                    if (!currentGPS) {{
+                        alert('❌ GPS OBLIGATOIRE pour déclarer un sinistre!\\nCliquez sur "Capturer mon GPS" et approuvez l\'accès.');
+                        return;
+                    }}
 
                     const formData = new FormData();
                     formData.append('user_email', document.getElementById('email').value);
                     formData.append('damage_type', document.getElementById('damageType').value);
                     formData.append('address', document.getElementById('address').value);
                     formData.append('description', document.getElementById('description').value);
+                    formData.append('phone_gps_lat', currentGPS.lat);
+                    formData.append('phone_gps_lon', currentGPS.lon);
                     formData.append('token', token);
 
                     try {{
@@ -927,10 +984,10 @@ def send_claim_links(claim_id: str):
 
 
 @app.post("/declare/{token}/submit")
-async def submit_declaration(token: str, user_email: str = "", damage_type: str = "", address: str = "", description: str = ""):
+async def submit_declaration(token: str, user_email: str = "", damage_type: str = "", address: str = "", description: str = "", phone_gps_lat: str = None, phone_gps_lon: str = None):
     """
     Client submits declaration via token link.
-    Creates claim + stores insurer email for auto PDF sending.
+    Creates claim + stores insurer email + verifies GPS location.
     """
     if token not in declaration_links:
         raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
@@ -943,6 +1000,17 @@ async def submit_declaration(token: str, user_email: str = "", damage_type: str 
     unique_token = secrets.token_urlsafe(32)
 
     location = geocode_address(address)
+
+    # Convert and store phone GPS
+    phone_gps = None
+    gps_verification = None
+    if phone_gps_lat and phone_gps_lon:
+        try:
+            phone_gps = {"latitude": float(phone_gps_lat), "longitude": float(phone_gps_lon)}
+            gps_verification = check_gps_location_match(location, phone_gps)
+        except:
+            pass
+
     fraud_history = check_fraud_history(user_email, address)
 
     claim_data = {
@@ -953,8 +1021,8 @@ async def submit_declaration(token: str, user_email: str = "", damage_type: str 
         "address": address,
         "description": description,
         "location": location,
-        "phone_gps": None,
-        "gps_verification": None,
+        "phone_gps": phone_gps,  # Store phone GPS from client
+        "gps_verification": gps_verification,  # Verify against address
         "fraud_history": fraud_history,
         "insurer_email": insurer_email,  # Store for auto PDF sending
         "photos": [],
@@ -971,7 +1039,8 @@ async def submit_declaration(token: str, user_email: str = "", damage_type: str 
     return {
         "claim_id": claim_id,
         "unique_token": unique_token,
-        "message": "✅ Sinistre créé. Uploadez les photos pour lancer l'analyse automatique.",
+        "gps_verification": gps_verification,
+        "message": "✅ Sinistre créé avec GPS vérifié. Uploadez les photos pour lancer l'analyse automatique.",
         "next_step": f"Uploadez photos via POST /claims/{claim_id}/photos",
         "insurer_will_receive": f"PDF sera envoyé à {insurer_email} après analyse"
     }
