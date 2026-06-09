@@ -633,6 +633,47 @@ def build_claim_pdf(claim: dict) -> bytes:
         field("Recommandation", analysis.get("recommendation"))
         field("Confiance", analysis.get("confidence"))
 
+    # Photos section
+    photos = claim.get("photos", [])
+    if photos:
+        pdf.ln(6)
+        section("Photos du sinistre")
+
+        for idx, photo in enumerate(photos, 1):
+            # Add page break if needed for multiple photos
+            if pdf.get_y() > 250:
+                pdf.add_page()
+                pdf.ln(10)
+
+            # Photo metadata
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.cell(0, 6, s(f"Photo {idx}: {photo.get('filename', 'unknown')}"), ln=True)
+
+            # GPS info if available
+            if photo.get("gps"):
+                gps = photo["gps"]
+                pdf.set_font("Helvetica", "", 9)
+                pdf.cell(0, 4, s(f"GPS: {gps['latitude']:.5f}, {gps['longitude']:.5f}"), ln=True)
+
+            # Try to display the photo (if base64 encoded image)
+            try:
+                import base64
+                from io import BytesIO
+
+                img_data = base64.b64decode(photo.get("data", ""))
+                if img_data:
+                    # Save temp image and add to PDF
+                    img_file = BytesIO(img_data)
+                    pdf.image(img_file, x=15, w=180, h=120)
+                    pdf.ln(2)
+            except Exception as e:
+                pdf.set_font("Helvetica", "I", 9)
+                pdf.set_text_color(150, 0, 0)
+                pdf.cell(0, 4, s(f"[Photo non affichable]"), ln=True)
+                pdf.set_text_color(30, 30, 30)
+
+            pdf.ln(3)
+
     pdf.ln(6)
     pdf.set_font("Helvetica", "I", 8)
     pdf.set_text_color(150, 150, 150)
