@@ -738,7 +738,6 @@ def build_public_analysis(analysis: dict | None, claim_data: dict) -> dict:
           "summary": str,
           "damage_type": str,
           "severity": "High" | "Medium" | "Low",
-          "estimated_cost": "€XXX - €YYY",
           "recommendations": [str, ...],
           "analyzed_at": ISO timestamp,
           ... (internal fields preserved for fraud checks / viewer compat)
@@ -774,19 +773,6 @@ def build_public_analysis(analysis: dict | None, claim_data: dict) -> dict:
             except (TypeError, ValueError):
                 severity = "Medium" if analysis else "Low"
 
-        # --- estimated_cost as a "€XXX - €YYY" range ---
-        cost = analysis.get("estimated_cost_eur") or analysis.get("estimated_cost")
-        estimated_cost = "N/A"
-        try:
-            base = int(float(cost))
-            if base > 0:
-                low = int(base * 0.8)
-                high = int(base * 1.2)
-                estimated_cost = f"€{low} - €{high}"
-        except (TypeError, ValueError):
-            if isinstance(cost, str) and cost.strip():
-                estimated_cost = cost.strip()
-
         # --- recommendations (list) ---
         recs = analysis.get("recommendations")
         if not isinstance(recs, list) or not recs:
@@ -798,13 +784,12 @@ def build_public_analysis(analysis: dict | None, claim_data: dict) -> dict:
             "summary": str(summary),
             "damage_type": str(damage_type),
             "severity": severity,
-            "estimated_cost": estimated_cost,
             "recommendations": recs,
             "analyzed_at": analysis.get("analyzed_at") or datetime.now().isoformat(),
         }
 
         # Preserve internal fields so existing viewer code + fraud checks keep working.
-        for key in ("detected_damage_type", "damage_severity", "estimated_cost_eur",
+        for key in ("detected_damage_type", "damage_severity",
                     "recommendation", "fraud_score", "fraud_indicators",
                     "is_ai_generated_or_manipulated", "confidence",
                     "consistency_with_declaration", "visible_damage",
@@ -818,7 +803,6 @@ def build_public_analysis(analysis: dict | None, claim_data: dict) -> dict:
             "summary": "Analyse en attente.",
             "damage_type": claim_data.get("damage_type", "Non déterminé"),
             "severity": "Low",
-            "estimated_cost": "N/A",
             "recommendations": ["Inspection manuelle recommandée."],
             "analyzed_at": datetime.now().isoformat(),
         }
@@ -2480,8 +2464,6 @@ def _render_claim_details(claim_id: str, claim: dict, client_view: bool = False,
                     f"<li>{r}</li>" for r in a_recs) + "</ul>"
             else:
                 a_reco = analysis.get("recommendation", "Aucune recommandation.")
-            # estimated_cost may be a "€X - €Y" string (public) or a numeric (legacy).
-            a_cost = analysis.get("estimated_cost") or analysis.get("estimated_cost_eur")
             a_analyzed = format_french_datetime(analysis.get("analyzed_at")) if analysis.get("analyzed_at") else None
 
             # Severity badge styling (handles both public High/Medium/Low and legacy low/high)
@@ -2493,23 +2475,13 @@ def _render_claim_details(claim_id: str, claim: dict, client_view: bool = False,
             }
             sev_class, sev_label = sev_map.get(str(a_severity).lower(), ("badge medium", str(a_severity)))
 
-            cost_row = ""
-            if a_cost not in (None, "", 0, "N/A"):
-                # If it's already a formatted "€..." string, don't append a second €.
-                cost_display = str(a_cost) if str(a_cost).strip().startswith("€") else f"{a_cost} €"
-                cost_row = f"""
-                <div class="info-item">
-                    <div class="info-label">Coût estimé</div>
-                    <div class="info-value">{cost_display}</div>
-                </div>"""
-
             analyzed_row = ""
             if a_analyzed:
                 analyzed_row = f'<p style="margin-top:15px;color:#94a3b8;font-size:12px;">Analyse effectuée le {a_analyzed}</p>'
 
             analysis_html = f"""
             <div class="section">
-                <h3>🤖 Analyse Claude Vision</h3>
+                <h3>🔍 Détection Avancée Fraude</h3>
                 <div class="analysis-content">
                     <p style="margin-bottom:18px;">{a_summary}</p>
                     <div class="info-grid">
@@ -2520,7 +2492,7 @@ def _render_claim_details(claim_id: str, claim: dict, client_view: bool = False,
                         <div class="info-item">
                             <div class="info-label">Gravité estimée</div>
                             <div class="info-value"><span class="{sev_class}">{sev_label}</span></div>
-                        </div>{cost_row}
+                        </div>
                     </div>
                     <div style="margin-top:18px;">
                         <div class="info-label">Recommandations</div>
@@ -2533,14 +2505,14 @@ def _render_claim_details(claim_id: str, claim: dict, client_view: bool = False,
         else:
             analysis_html = f"""
             <div class="section">
-                <h3>🤖 Analyse Claude Vision</h3>
+                <h3>🔍 Détection Avancée Fraude</h3>
                 <div class="analysis-content">{str(analysis)}</div>
             </div>
             """
     else:
         analysis_html = """
         <div class="section">
-            <h3>🤖 Analyse Claude Vision</h3>
+            <h3>🔍 Détection Avancée Fraude</h3>
             <div class="analysis-content" style="color:#94a3b8;">
                 Analyse non encore disponible. Elle sera générée automatiquement
                 dès réception des photos du sinistre.
@@ -3861,17 +3833,13 @@ def _generate_claim_pdf_impl(claim_id: str, claim: dict) -> bytes:
 
     # ---- Vision analysis ---------------------------------------------------
     analysis = claim.get("analysis")
-    section("Analyse Claude Vision")
+    section("Detection Avancee Fraude")
     if isinstance(analysis, dict) and analysis:
         summary = analysis.get("summary") or analysis.get("visible_damage")
         if summary:
             field("Resume", summary)
         field("Type detecte", analysis.get("damage_type") or analysis.get("detected_damage_type"))
         field("Gravite", analysis.get("severity") or analysis.get("damage_severity"))
-        cost = analysis.get("estimated_cost") or analysis.get("estimated_cost_eur")
-        if cost not in (None, "", 0, "N/A"):
-            cost_disp = str(cost) if str(cost).strip().startswith("€") or "-" in str(cost) else f"{cost} EUR"
-            field("Cout estime", cost_disp)
         recs = analysis.get("recommendations")
         if isinstance(recs, list) and recs:
             field("Recommandations", " | ".join(str(r) for r in recs))
@@ -4089,14 +4057,12 @@ def build_claim_pdf(claim: dict) -> bytes:
 
     # Analysis
     analysis = claim.get("analysis")
-    section("Analyse IA (Claude Vision)")
+    section("Detection Avancee Fraude")
     if not analysis:
         pdf.multi_cell(0, 7, s("Aucune analyse disponible. Lancez l'analyse depuis le tableau de bord."))
     else:
         field("Type detecte", analysis.get("detected_damage_type"))
         field("Gravite", analysis.get("damage_severity"))
-        cost = analysis.get("estimated_cost_eur", analysis.get("estimated_cost"))
-        field("Cout estime", f"{cost} EUR" if cost not in (None, "") else "-")
         field("Localisation fuite", analysis.get("leak_location"))
         field("Degats visibles", analysis.get("visible_damage"))
         field("Score fraude", f"{analysis.get('fraud_score', '-')} / 100")
