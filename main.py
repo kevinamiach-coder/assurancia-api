@@ -2269,10 +2269,16 @@ def get_declaration_form(token: str):
                         const statusDiv = document.getElementById("status");
                         statusDiv.className = "success-message";
                         statusDiv.style.display = "block";
-                        var pdfUrl = apiUrl + "/claim/" + data.claim_id + "/pdf";
-                        statusDiv.innerHTML = "<h3>Sinistre declare!</h3><p>Reference: " + data.claim_id + "</p>" +
+                        // Use token-authenticated client links (no claim_id exposed).
+                        var viewUrl = apiUrl + (data.client_view_url || ("/my-claim/" + data.unique_token));
+                        var pdfUrl = apiUrl + (data.client_pdf_url || ("/my-claim/" + data.unique_token + "/pdf"));
+                        statusDiv.innerHTML = "<h3>Declaration creee!</h3><p>Reference: " + data.claim_id + "</p>" +
                             "<p style='margin-top:12px;'>" + (data.photo_count || 0) + " photo(s) recue(s).</p>" +
-                            "<p style='margin-top:12px;'><a href='" + pdfUrl + "' style='color:#60a5fa;font-weight:600;'>Telecharger le rapport PDF</a></p>";
+                            "<p style='margin-top:12px;'>" +
+                            "<a href='" + viewUrl + "' style='color:#60a5fa;font-weight:600;'>Voir ma declaration</a>" +
+                            " &nbsp;|&nbsp; " +
+                            "<a href='" + pdfUrl + "' style='color:#60a5fa;font-weight:600;'>Telecharger PDF</a>" +
+                            "</p>";
                         document.getElementById("declarationForm").style.display = "none";
                     } else {
                         alert("Erreur");
@@ -2303,7 +2309,12 @@ def get_declaration_form(token: str):
 
 @app.get("/claim/{claim_id}")
 def view_claim_details(claim_id: str):
-    """View complete claim details with photos, analysis, GPS map, and fraud score."""
+    """INTERNAL (insurer/expert) view of a claim — full data incl. fraud score.
+
+    Looks up by claim_id (used from the dashboard). Client-facing access goes
+    through /my-claim/{unique_token} which renders the same page in client mode
+    (fraud score + expert conclusion hidden).
+    """
     # Try MongoDB first, then fall back to in-memory
     claim = None
     try:
@@ -2317,6 +2328,72 @@ def view_claim_details(claim_id: str):
     if not claim:
         raise HTTPException(status_code=404, detail="Sinistre non trouvé")
 
+    return _render_claim_details(claim_id, claim, client_view=False)
+
+
+def _load_claim_by_token(unique_token: str) -> tuple:
+    """Resolve a claim from its unique_token (client authorization token).
+
+    Returns (claim_id, claim_dict) or (None, None) if the token doesn't match
+    any claim. Checks MongoDB first, then in-memory, then the token_to_claim map.
+    Never raises — returns (None, None) on any backend error.
+    """
+    if not unique_token:
+        return None, None
+    # 1. MongoDB direct lookup by unique_token.
+    try:
+        doc = claims_collection.find_one({"unique_token": unique_token})
+        if doc:
+            return doc.get("claim_id"), doc
+    except Exception:
+        pass
+    # 2. In-memory token map.
+    claim_id = token_to_claim.get(unique_token)
+    if claim_id and claim_id in claims_db:
+        return claim_id, claims_db[claim_id]
+    # 3. Scan in-memory claims as a last resort.
+    for cid, c in claims_db.items():
+        if isinstance(c, dict) and c.get("unique_token") == unique_token:
+            return cid, c
+    return None, None
+
+
+@app.get("/my-claim/{unique_token}")
+def view_my_claim(unique_token: str):
+    """CLIENT view — access a claim via its unguessable unique_token.
+
+    Shows only client-relevant sections (declaration, geolocation, photos,
+    analysis, attestation). The internal fraud score and the expert conclusion
+    are stripped out. Invalid/unknown tokens return 404.
+    """
+    claim_id, claim = _load_claim_by_token(unique_token)
+    if not claim:
+        raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
+    return _render_claim_details(claim_id, claim, client_view=True,
+                                 unique_token=unique_token)
+
+
+@app.get("/my-claim/{unique_token}/pdf")
+def download_my_claim_pdf(unique_token: str):
+    """CLIENT PDF download — authenticated by unique_token (no claim_id exposed)."""
+    claim_id, claim = _load_claim_by_token(unique_token)
+    if not claim:
+        raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
+    pdf_bytes = generate_claim_pdf(claim_id, claim)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="ma_declaration.pdf"'},
+    )
+
+
+def _render_claim_details(claim_id: str, claim: dict, client_view: bool = False,
+                          unique_token: str = "") -> Response:
+    """Render the claim-detail HTML page.
+
+    When client_view=True, internal data (fraud score, expert conclusion) is
+    hidden and the PDF/email buttons point at the token-authenticated routes.
+    """
     # --- GPS coordinates (defensive: phone_gps may be None or missing keys) ---
     phone_gps = claim.get("phone_gps") or {}
     gps_lat = phone_gps.get("latitude", "N/A")
@@ -2360,6 +2437,15 @@ def view_claim_details(claim_id: str):
         fraud_status = '<span class="badge high">🚨 Suspect</span>'
     fraud_score_display = int(fraud_score) if fraud_score == int(fraud_score) else fraud_score
 
+    # Fraud score is INTERNAL ONLY — never expose it in the client (token) view.
+    if client_view:
+        fraud_score_row = ""
+    else:
+        fraud_score_row = f"""<div class="info-item">
+                        <div class="info-label">Score Fraude</div>
+                        <div class="info-value">{fraud_status} ({fraud_score_display})</div>
+                    </div>"""
+
     # --- Date (defensive: created_at may be None / missing / short) ---
     # Stored in ISO format; displayed as "10 juin 2026 à 13:45:32 (GMT+3)".
     created_at = claim.get("created_at")
@@ -2383,11 +2469,14 @@ def view_claim_details(claim_id: str):
         if src:
             photos_inner += f'<img src="{src}" alt="Photo {i+1}" class="claim-photo">'
 
+    # The inline "add photos" button is an internal management action only.
+    add_photos_btn = "" if client_view else \
+        '<button class="action-btn add" onclick="openAddPhotos()">📥 Ajouter des photos</button>'
     photos_html = f"""
     <div class="section">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
             <h3 style="margin-bottom:0;">📸 Photos ({photo_count}/10)</h3>
-            <button class="action-btn add" onclick="openAddPhotos()">📥 Ajouter des photos</button>
+            {add_photos_btn}
         </div>
         <div class="photos-grid">{photos_inner or '<p style="color:#94a3b8;">Aucune photo pour le moment.</p>'}</div>
     </div>
@@ -2548,7 +2637,12 @@ def view_claim_details(claim_id: str):
             "L'évaluation automatique des dégâts est en attente des photos."
         )
 
-    conclusion_html = f"""
+    # The expert conclusion exposes the fraud score and internal assessment —
+    # it is INTERNAL ONLY and must never be shown in the client (token) view.
+    if client_view:
+        conclusion_html = ""
+    else:
+        conclusion_html = f"""
     <div class="section">
         <h3>📑 Conclusion de l'expert</h3>
         <div class="conclusion-content">
@@ -2566,6 +2660,21 @@ def view_claim_details(claim_id: str):
         </div>
     </div>
     """
+
+    # --- Build view-mode-dependent pieces (PDF link + action buttons) -------
+    if client_view:
+        page_title = "Ma Déclaration"
+        pdf_url = f"/my-claim/{unique_token}/pdf"
+        # Client gets ONLY the PDF download button (no email / add-photos mgmt).
+        actions_bar = f'<a class="action-btn pdf" href="{pdf_url}">📥 Télécharger ma déclaration (PDF)</a>'
+    else:
+        page_title = "Détail du Sinistre"
+        pdf_url = f"/claim/{claim_id}/pdf"
+        actions_bar = (
+            f'<a class="action-btn pdf" href="{pdf_url}">📥 Télécharger le PDF</a>'
+            '<button class="action-btn email" onclick="sendPdfEmail()">📧 Envoyer le PDF</button>'
+            '<button class="action-btn add" onclick="openAddPhotos()">📥 Ajouter des photos</button>'
+        )
 
     html = f"""
     <!DOCTYPE html>
@@ -2811,12 +2920,10 @@ def view_claim_details(claim_id: str):
     <body>
         <div class="container">
             <header>
-                <h1>🔐 Détail du Sinistre</h1>
+                <h1>🔐 {page_title}</h1>
                 <p style="color: #cbd5e1; font-size: 16px;">Référence: <strong>{claim_id}</strong></p>
                 <div class="actions-bar">
-                    <a class="action-btn pdf" href="/claim/{claim_id}/pdf">📥 Télécharger le PDF</a>
-                    <button class="action-btn email" onclick="sendPdfEmail()">📧 Envoyer le PDF</button>
-                    <button class="action-btn add" onclick="openAddPhotos()">📥 Ajouter des photos</button>
+                    {actions_bar}
                 </div>
             </header>
 
@@ -2851,10 +2958,7 @@ def view_claim_details(claim_id: str):
                         <div class="info-label">Adresse</div>
                         <div class="info-value">{claim.get('address', 'N/A')}</div>
                     </div>
-                    <div class="info-item">
-                        <div class="info-label">Score Fraude</div>
-                        <div class="info-value">{fraud_status} ({fraud_score_display})</div>
-                    </div>
+                    {fraud_score_row}
                     <div class="info-item">
                         <div class="info-label">Date</div>
                         <div class="info-value">{date_display}</div>
@@ -3259,17 +3363,33 @@ async def submit_declaration(
         logger.error("❌ MongoDB save FAILED for claim_id=%s: %r", claim_id, e)
         logger.error("   → Claim is still available in-memory (fallback). Fix Mongo to persist.")
 
+    base_url = os.getenv("APP_URL", "https://assurancia-api-2.onrender.com")
+    client_view_url = f"/my-claim/{unique_token}"
+    client_pdf_url = f"/my-claim/{unique_token}/pdf"
+
     return {
         "mongo_saved": mongo_saved,
         "mongo_error": mongo_error,
-        "claim_id": claim_id,
-        "unique_token": unique_token,
+        "claim_id": claim_id,  # internal reference (dashboard / insurer use)
+        "unique_token": unique_token,  # client authorization token (unguessable)
+        # Client-facing links (token-authenticated, no claim_id exposed):
+        "client_view_url": client_view_url,
+        "client_pdf_url": client_pdf_url,
+        "client_links": {
+            "view": f"{base_url}{client_view_url}",
+            "pdf": f"{base_url}{client_pdf_url}",
+        },
         "gps_verification": gps_verification,
         "photo_count": photo_count,
         "analysis": public_analysis,
         "fraud_score": fraud_score,
-        "message": "✅ Sinistre créé, analysé et scoré. Consultez le détail du dossier.",
-        "next_step": f"Consultez le détail via /claim/{claim_id}",
+        "message": "✅ Déclaration créée ! Consultez votre déclaration ou téléchargez votre PDF.",
+        "success_message_html": (
+            f'Déclaration créée! '
+            f'<a href="{client_view_url}">Voir ma déclaration</a> '
+            f'<a href="{client_pdf_url}">Télécharger PDF</a>'
+        ),
+        "next_step": f"Consultez votre déclaration via {client_view_url}",
         "insurer_will_receive": f"PDF sera envoyé à {insurer_email} après analyse",
         "attestation_confirmed": bool(attestation_confirmed),
         "attestation_timestamp": claim_data["attestation_timestamp"],
@@ -3704,6 +3824,41 @@ def _generate_claim_pdf_impl(claim_id: str, claim: dict) -> bytes:
     field("Date de declaration", date_fr)
     field("Reference", claim.get("claim_id", claim_id))
     field("Statut", claim.get("status", "open"))
+
+    # ---- Geolocation -------------------------------------------------------
+    # Placed near the top (after the claim reference, before damage assessment).
+    # Defensive: phone_gps / gps_verification may be None or have missing keys.
+    section("Geolocalisation")  # rendered as "Geolocalisation" (PDF is latin-1, no emoji)
+
+    phone_gps = claim.get("phone_gps") or {}
+    gps_lat = phone_gps.get("latitude")
+    gps_lon = phone_gps.get("longitude")
+    try:
+        coords_disp = f"Latitude: {float(gps_lat):.4f} deg | Longitude: {float(gps_lon):.4f} deg"
+    except (TypeError, ValueError):
+        coords_disp = "N/A"
+    field("Coordonnees GPS", coords_disp)
+    field("Adresse declaree", claim.get("address") or "N/A")
+
+    gps_ver = claim.get("gps_verification") or {}
+    # `matches` is the canonical key from check_gps_location_match; tolerate `match` too.
+    gps_ok = gps_ver.get("matches")
+    if gps_ok is None:
+        gps_ok = gps_ver.get("match")
+    distance_km = gps_ver.get("distance_km")
+    if not gps_ver:
+        verif_disp = "N/A (pas de donnees GPS)"
+    elif gps_ok:
+        if distance_km is not None:
+            verif_disp = f"Verifie (Distance: {distance_km}km)"
+        else:
+            verif_disp = "Verifie"
+    else:
+        if distance_km is not None:
+            verif_disp = f"Echoue - GPS ne correspond pas (Distance: {distance_km}km)"
+        else:
+            verif_disp = "Echoue - GPS ne correspond pas"
+    field("Verification GPS", verif_disp)
 
     # ---- Form fields -------------------------------------------------------
     section("Informations du declarant")
