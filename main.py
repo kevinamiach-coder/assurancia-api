@@ -2115,9 +2115,11 @@ async def submit_declaration(token: str, user_email: str = "", firstname: str = 
 
     # Save to MongoDB
     try:
-        claims_collection.insert_one(claim_data)
-    except:
-        pass
+        result = claims_collection.insert_one(claim_data)
+        print(f"✅ MongoDB insert successful: {result.inserted_id}")
+    except Exception as e:
+        print(f"❌ MongoDB insert error: {e}")
+        print(f"❌ Trying to insert: {claim_data}")
 
     return {
         "claim_id": claim_id,
