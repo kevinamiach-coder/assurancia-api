@@ -2269,15 +2269,12 @@ def get_declaration_form(token: str):
                         const statusDiv = document.getElementById("status");
                         statusDiv.className = "success-message";
                         statusDiv.style.display = "block";
-                        // Use token-authenticated client links (no claim_id exposed).
+                        // Use token-authenticated client link (no claim_id, no PDF exposed).
                         var viewUrl = apiUrl + (data.client_view_url || ("/my-claim/" + data.unique_token));
-                        var pdfUrl = apiUrl + (data.client_pdf_url || ("/my-claim/" + data.unique_token + "/pdf"));
                         statusDiv.innerHTML = "<h3>Declaration creee!</h3><p>Reference: " + data.claim_id + "</p>" +
                             "<p style='margin-top:12px;'>" + (data.photo_count || 0) + " photo(s) recue(s).</p>" +
                             "<p style='margin-top:12px;'>" +
                             "<a href='" + viewUrl + "' style='color:#60a5fa;font-weight:600;'>Voir ma declaration</a>" +
-                            " &nbsp;|&nbsp; " +
-                            "<a href='" + pdfUrl + "' style='color:#60a5fa;font-weight:600;'>Telecharger PDF</a>" +
                             "</p>";
                         document.getElementById("declarationForm").style.display = "none";
                     } else {
@@ -2371,20 +2368,6 @@ def view_my_claim(unique_token: str):
         raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
     return _render_claim_details(claim_id, claim, client_view=True,
                                  unique_token=unique_token)
-
-
-@app.get("/my-claim/{unique_token}/pdf")
-def download_my_claim_pdf(unique_token: str):
-    """CLIENT PDF download — authenticated by unique_token (no claim_id exposed)."""
-    claim_id, claim = _load_claim_by_token(unique_token)
-    if not claim:
-        raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
-    pdf_bytes = generate_claim_pdf(claim_id, claim)
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": 'attachment; filename="ma_declaration.pdf"'},
-    )
 
 
 def _render_claim_details(claim_id: str, claim: dict, client_view: bool = False,
@@ -2664,9 +2647,9 @@ def _render_claim_details(claim_id: str, claim: dict, client_view: bool = False,
     # --- Build view-mode-dependent pieces (PDF link + action buttons) -------
     if client_view:
         page_title = "Ma Déclaration"
-        pdf_url = f"/my-claim/{unique_token}/pdf"
-        # Client gets ONLY the PDF download button (no email / add-photos mgmt).
-        actions_bar = f'<a class="action-btn pdf" href="{pdf_url}">📥 Télécharger ma déclaration (PDF)</a>'
+        # Client view has NO PDF access: no download button, no email button.
+        # Client sees only their declaration data, photos and analysis.
+        actions_bar = ""
     else:
         page_title = "Détail du Sinistre"
         pdf_url = f"/claim/{claim_id}/pdf"
@@ -3365,29 +3348,25 @@ async def submit_declaration(
 
     base_url = os.getenv("APP_URL", "https://assurancia-api-2.onrender.com")
     client_view_url = f"/my-claim/{unique_token}"
-    client_pdf_url = f"/my-claim/{unique_token}/pdf"
 
     return {
         "mongo_saved": mongo_saved,
         "mongo_error": mongo_error,
         "claim_id": claim_id,  # internal reference (dashboard / insurer use)
         "unique_token": unique_token,  # client authorization token (unguessable)
-        # Client-facing links (token-authenticated, no claim_id exposed):
+        # Client-facing link (token-authenticated, no claim_id, no PDF exposed):
         "client_view_url": client_view_url,
-        "client_pdf_url": client_pdf_url,
         "client_links": {
             "view": f"{base_url}{client_view_url}",
-            "pdf": f"{base_url}{client_pdf_url}",
         },
         "gps_verification": gps_verification,
         "photo_count": photo_count,
         "analysis": public_analysis,
         "fraud_score": fraud_score,
-        "message": "✅ Déclaration créée ! Consultez votre déclaration ou téléchargez votre PDF.",
+        "message": "✅ Déclaration créée ! Consultez votre déclaration.",
         "success_message_html": (
             f'Déclaration créée! '
-            f'<a href="{client_view_url}">Voir ma déclaration</a> '
-            f'<a href="{client_pdf_url}">Télécharger PDF</a>'
+            f'<a href="{client_view_url}">Voir ma déclaration</a>'
         ),
         "next_step": f"Consultez votre déclaration via {client_view_url}",
         "insurer_will_receive": f"PDF sera envoyé à {insurer_email} après analyse",
