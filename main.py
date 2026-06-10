@@ -62,6 +62,39 @@ declaration_links: dict = {}  # Declaration templates: token -> {insurer_email, 
 SUPPORTED_MEDIA_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_PHOTO_BYTES = 5 * 1024 * 1024  # 5 MB per photo (keeps memory safe on free tier)
 
+# Display timezone for human-readable timestamps (Kevin's location = GMT+3).
+DISPLAY_TZ_OFFSET_HOURS = 3
+DISPLAY_TZ_LABEL = "GMT+3"
+
+_FRENCH_MONTHS = [
+    "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+]
+
+
+def format_french_datetime(iso_value, with_timezone: bool = True) -> str:
+    """Format an ISO timestamp as a readable French date/time.
+
+    Example: "10 juin 2026 à 13:45:32 (GMT+3)".
+
+    ISO timestamps are stored as naive local time (datetime.now().isoformat()),
+    so we display them as-is and simply append the configured timezone label.
+    Returns "N/A" for anything unparseable (defensive against None / bad data).
+    """
+    if not iso_value:
+        return "N/A"
+    try:
+        dt = datetime.fromisoformat(str(iso_value))
+    except (ValueError, TypeError):
+        # Fall back to a best-effort slice so we never crash the page.
+        return str(iso_value)[:19].replace("T", " ")
+
+    month = _FRENCH_MONTHS[dt.month - 1]
+    base = f"{dt.day} {month} {dt.year} à {dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}"
+    if with_timezone:
+        base += f" ({DISPLAY_TZ_LABEL})"
+    return base
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -547,6 +580,156 @@ Repondez UNIQUEMENT avec un objet JSON valide (aucun texte avant ou apres) avec 
     return analysis
 
 
+def _persist_claim_field(claim_id: str, fields: dict) -> bool:
+    """Update a claim's fields in BOTH claims_db (in-memory) and MongoDB.
+
+    Returns True if the MongoDB write succeeded. In-memory is always updated
+    when the claim exists locally. Errors are caught and logged (never raised)
+    so callers can keep responding even if Mongo is unreachable.
+    """
+    # In-memory update (fallback store)
+    if claim_id in claims_db:
+        claims_db[claim_id].update(fields)
+
+    # MongoDB update
+    mongo_ok = False
+    try:
+        result = claims_collection.update_one(
+            {"claim_id": claim_id}, {"$set": fields}
+        )
+        mongo_ok = result.matched_count > 0
+        if not mongo_ok:
+            logger.warning("⚠️ _persist_claim_field: no Mongo doc matched claim_id=%s", claim_id)
+    except Exception as e:
+        logger.error("❌ _persist_claim_field Mongo update FAILED claim_id=%s: %r", claim_id, e)
+    return mongo_ok
+
+
+def _photo_to_vision_input(photo) -> dict | None:
+    """Normalize a stored photo into the {data, content_type} shape that
+    call_claude_vision() expects.
+
+    Photos can be stored in two shapes:
+      1. dict from /claims/{id}/photos -> {"data": <base64>, "content_type": ...}
+      2. a data-URL string "data:image/jpeg;base64,...." (declaration viewer)
+    Returns None if the photo cannot be normalized.
+    """
+    # Shape 1: dict already in the right format
+    if isinstance(photo, dict):
+        data = photo.get("data")
+        if not data:
+            return None
+        # data may itself be a data-URL
+        if isinstance(data, str) and data.startswith("data:"):
+            try:
+                header, b64 = data.split(",", 1)
+                ctype = header.split(";")[0].replace("data:", "") or "image/jpeg"
+                return {"data": b64, "content_type": ctype}
+            except Exception:
+                return None
+        return {"data": data, "content_type": photo.get("content_type", "image/jpeg")}
+
+    # Shape 2: bare data-URL string
+    if isinstance(photo, str) and photo.startswith("data:"):
+        try:
+            header, b64 = photo.split(",", 1)
+            ctype = header.split(";")[0].replace("data:", "") or "image/jpeg"
+            return {"data": b64, "content_type": ctype}
+        except Exception:
+            return None
+
+    return None
+
+
+def analyze_claim_photos_with_claude(claim_id: str, photos: list) -> dict:
+    """Run Claude Vision analysis on a claim's photos and persist the result.
+
+    Uses the first usable photo. All API/parse errors are caught and returned
+    as a structured analysis dict (never raised), so the declaration flow can
+    never be broken by a Vision failure. The result is stored in MongoDB and
+    claims_db under claim_data["analysis"].
+    """
+    claim = claims_db.get(claim_id)
+    if claim is None:
+        try:
+            claim = claims_collection.find_one({"claim_id": claim_id}) or {}
+        except Exception:
+            claim = {}
+
+    # Build a vision-ready photo from the first usable entry
+    vision_photo = None
+    for p in (photos or []):
+        vision_photo = _photo_to_vision_input(p)
+        if vision_photo:
+            break
+
+    if vision_photo is None:
+        analysis = {
+            "summary": "Aucune photo exploitable n'a été fournie pour l'analyse.",
+            "detected_damage_type": claim.get("damage_type", "inconnu"),
+            "damage_severity": "unknown",
+            "fraud_score": 0,
+            "recommendation": "Demander au client de fournir des photos nettes du sinistre.",
+            "confidence": "low",
+            "analyzed_at": datetime.now().isoformat(),
+        }
+        _persist_claim_field(claim_id, {"analysis": analysis})
+        return analysis
+
+    if not client:
+        analysis = {
+            "summary": "Clé API Anthropic non configurée : analyse Vision indisponible.",
+            "detected_damage_type": claim.get("damage_type", "inconnu"),
+            "damage_severity": "unknown",
+            "fraud_score": 0,
+            "recommendation": "Configurer ANTHROPIC_API_KEY puis relancer l'analyse.",
+            "confidence": "low",
+            "analyzed_at": datetime.now().isoformat(),
+        }
+        _persist_claim_field(claim_id, {"analysis": analysis})
+        return analysis
+
+    try:
+        analysis = call_claude_vision(vision_photo, claim)
+    except Exception as e:
+        logger.error("❌ analyze_claim_photos_with_claude failed claim_id=%s: %r", claim_id, e)
+        analysis = {
+            "summary": f"L'analyse automatique a échoué ({type(e).__name__}).",
+            "detected_damage_type": claim.get("damage_type", "inconnu"),
+            "damage_severity": "unknown",
+            "fraud_score": 0,
+            "recommendation": "Inspection manuelle requise (erreur technique lors de l'analyse).",
+            "confidence": "low",
+        }
+
+    if not isinstance(analysis, dict):
+        analysis = {"summary": str(analysis)}
+
+    # Build a human-readable summary if Claude didn't supply one.
+    if not analysis.get("summary"):
+        parts = []
+        if analysis.get("detected_damage_type"):
+            parts.append(f"Dégât détecté : {analysis['detected_damage_type']}")
+        if analysis.get("damage_severity"):
+            parts.append(f"gravité {analysis['damage_severity']}")
+        if analysis.get("visible_damage"):
+            parts.append(str(analysis["visible_damage"]))
+        analysis["summary"] = ". ".join(parts) if parts else "Analyse Claude Vision effectuée."
+
+    analysis["analyzed_at"] = datetime.now().isoformat()
+
+    # Persist to Mongo + in-memory. Also sync the top-level fraud_score so the
+    # claim viewer badge reflects the analysis.
+    update_fields = {"analysis": analysis}
+    if isinstance(analysis.get("fraud_score"), (int, float)):
+        update_fields["fraud_score"] = analysis["fraud_score"]
+    _persist_claim_field(claim_id, update_fields)
+
+    logger.info("✅ Vision analysis stored for claim_id=%s (fraud_score=%s)",
+                claim_id, analysis.get("fraud_score"))
+    return analysis
+
+
 # ----------------------------------------------------------------------------
 # Routes
 # ----------------------------------------------------------------------------
@@ -606,6 +789,9 @@ def create_claim(claim: ClaimCreate):
         "analysis": None,
         "status": "open",
         "created_at": datetime.now().isoformat(),
+        # Attestation (safe defaults — set when the declarant attests)
+        "attestation_confirmed": False,
+        "attestation_timestamp": None,
     }
 
     claims_db[claim_id] = claim_data
@@ -686,6 +872,20 @@ async def upload_photo(claim_id: str, file: UploadFile = File(...)):
     }
     claims_db[claim_id]["photos"].append(photo_entry)
 
+    # Persist the updated photos array to MongoDB so the analysis (and viewer)
+    # see the photo even when reading from Mongo.
+    _persist_claim_field(claim_id, {"photos": claims_db[claim_id]["photos"]})
+
+    # Trigger Claude Vision analysis automatically now that photos exist.
+    # Errors are swallowed inside analyze_claim_photos_with_claude (never raised),
+    # so a Vision failure can't break photo upload.
+    analysis_triggered = False
+    try:
+        analyze_claim_photos_with_claude(claim_id, claims_db[claim_id]["photos"])
+        analysis_triggered = True
+    except Exception as e:
+        logger.error("❌ Auto-analysis after upload failed claim_id=%s: %r", claim_id, e)
+
     return {
         "status": "ok",
         "filename": file.filename,
@@ -694,6 +894,7 @@ async def upload_photo(claim_id: str, file: UploadFile = File(...)):
         "exif_datetime": exif_datetime.get("timestamp") if exif_datetime else None,
         "is_duplicate": duplicate_check["is_duplicate"],
         "duplicate_warning": duplicate_check["fraud_indicator"],
+        "analysis_triggered": analysis_triggered,
         "message": "Photo uploadee avec succes",
     }
 
@@ -1768,8 +1969,9 @@ def view_claim_details(claim_id: str):
     fraud_score_display = int(fraud_score) if fraud_score == int(fraud_score) else fraud_score
 
     # --- Date (defensive: created_at may be None / missing / short) ---
+    # Stored in ISO format; displayed as "10 juin 2026 à 13:45:32 (GMT+3)".
     created_at = claim.get("created_at")
-    date_display = str(created_at)[:10] if created_at else "N/A"
+    date_display = format_french_datetime(created_at)
 
     # --- Photos HTML ---
     photos_html = ""
@@ -1786,17 +1988,164 @@ def view_claim_details(claim_id: str):
     analysis = claim.get("analysis")
     if analysis:
         if isinstance(analysis, dict):
-            analysis_text = analysis.get("summary", "Pas de résumé")
+            a_summary = analysis.get("summary") or "Pas de résumé disponible."
+            a_type = analysis.get("detected_damage_type", "Non déterminé")
+            a_severity = analysis.get("damage_severity", "Non déterminée")
+            a_reco = analysis.get("recommendation", "Aucune recommandation.")
+            a_cost = analysis.get("estimated_cost_eur", analysis.get("estimated_cost"))
+            a_analyzed = format_french_datetime(analysis.get("analyzed_at")) if analysis.get("analyzed_at") else None
+
+            # Severity badge styling
+            sev_map = {
+                "low": ("badge low", "Faible"),
+                "medium": ("badge medium", "Modérée"),
+                "high": ("badge high", "Élevée"),
+                "critical": ("badge high", "Critique"),
+            }
+            sev_class, sev_label = sev_map.get(str(a_severity).lower(), ("badge medium", str(a_severity)))
+
+            cost_row = ""
+            if a_cost not in (None, "", 0):
+                cost_row = f"""
+                <div class="info-item">
+                    <div class="info-label">Coût estimé</div>
+                    <div class="info-value">{a_cost} €</div>
+                </div>"""
+
+            analyzed_row = ""
+            if a_analyzed:
+                analyzed_row = f'<p style="margin-top:15px;color:#94a3b8;font-size:12px;">Analyse effectuée le {a_analyzed}</p>'
+
+            analysis_html = f"""
+            <div class="section">
+                <h3>🤖 Analyse Claude Vision</h3>
+                <div class="analysis-content">
+                    <p style="margin-bottom:18px;">{a_summary}</p>
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Type de dégât détecté</div>
+                            <div class="info-value">{a_type}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Gravité estimée</div>
+                            <div class="info-value"><span class="{sev_class}">{sev_label}</span></div>
+                        </div>{cost_row}
+                    </div>
+                    <div style="margin-top:18px;">
+                        <div class="info-label">Recommandations</div>
+                        <div class="info-value" style="font-weight:400;line-height:1.6;">{a_reco}</div>
+                    </div>
+                    {analyzed_row}
+                </div>
+            </div>
+            """
         else:
-            analysis_text = str(analysis)
-        analysis_html = f"""
+            analysis_html = f"""
+            <div class="section">
+                <h3>🤖 Analyse Claude Vision</h3>
+                <div class="analysis-content">{str(analysis)}</div>
+            </div>
+            """
+    else:
+        analysis_html = """
         <div class="section">
             <h3>🤖 Analyse Claude Vision</h3>
-            <div class="analysis-content">
-                {analysis_text}
+            <div class="analysis-content" style="color:#94a3b8;">
+                Analyse non encore disponible. Elle sera générée automatiquement
+                dès réception des photos du sinistre.
             </div>
         </div>
         """
+
+    # --- Attestation HTML ---
+    attestation_confirmed = bool(claim.get("attestation_confirmed", False))
+    attestation_ts = claim.get("attestation_timestamp")
+    if attestation_confirmed and attestation_ts:
+        attestation_block = f"""
+        <div class="attest-confirmed">
+            <span class="attest-check">✅</span>
+            <div>
+                <div style="font-weight:600;color:#86efac;">Déclaration attestée</div>
+                <div style="font-size:13px;color:#cbd5e1;margin-top:4px;">
+                    Attesté le {format_french_datetime(attestation_ts)}
+                </div>
+            </div>
+        </div>
+        """
+    else:
+        attestation_block = """
+        <button id="attestBtn" class="attest-btn" onclick="attestClaim()">
+            ✅ J'atteste de la véracité de cette déclaration
+        </button>
+        <p style="margin-top:10px;color:#94a3b8;font-size:12px;">Statut : Non attesté</p>
+        """
+
+    # --- Conclusion section (professional insurance wording) ---
+    if fraud_score < 20:
+        risk_label = "FAIBLE"
+        risk_color = "#86efac"
+        risk_sentence = (
+            "Les éléments transmis sont cohérents et ne présentent pas d'indice de fraude significatif. "
+            "Le dossier peut suivre le circuit d'indemnisation standard."
+        )
+        next_steps = (
+            "Procéder à la validation du dossier et à l'évaluation chiffrée des indemnités. "
+            "Une expertise sur site reste recommandée pour les sinistres de gravité élevée."
+        )
+    elif fraud_score < 60:
+        risk_label = "MODÉRÉ"
+        risk_color = "#fbbf24"
+        risk_sentence = (
+            "Certains éléments appellent à la vigilance et méritent une vérification complémentaire "
+            "avant toute prise de décision d'indemnisation."
+        )
+        next_steps = (
+            "Diligenter une expertise contradictoire sur site et solliciter des justificatifs additionnels "
+            "(factures, témoignages, devis) auprès de l'assuré avant validation."
+        )
+    else:
+        risk_label = "ÉLEVÉ"
+        risk_color = "#fca5a5"
+        risk_sentence = (
+            "Le dossier présente plusieurs indices de fraude potentielle nécessitant un traitement renforcé. "
+            "Aucune indemnisation ne devrait être engagée en l'état."
+        )
+        next_steps = (
+            "Suspendre le traitement, transmettre le dossier au service anti-fraude et mandater une expertise "
+            "approfondie. Documenter l'ensemble des anomalies relevées avant tout contact avec l'assuré."
+        )
+
+    if isinstance(analysis, dict):
+        concl_damage = analysis.get("detected_damage_type", claim.get("damage_type", "non déterminé"))
+        concl_sev = analysis.get("damage_severity", "non déterminée")
+        damage_sentence = (
+            f"L'analyse visuelle conclut à un sinistre de type « {concl_damage} » "
+            f"d'une gravité estimée « {concl_sev} »."
+        )
+    else:
+        damage_sentence = (
+            f"Le sinistre déclaré est de type « {claim.get('damage_type', 'non déterminé')} ». "
+            "L'évaluation automatique des dégâts est en attente des photos."
+        )
+
+    conclusion_html = f"""
+    <div class="section">
+        <h3>📑 Conclusion de l'expert</h3>
+        <div class="conclusion-content">
+            <p><strong>Évaluation des dégâts.</strong> {damage_sentence}</p>
+            <p style="margin-top:14px;">
+                <strong>Risque de fraude.</strong>
+                <span style="color:{risk_color};font-weight:700;">{risk_label}</span>
+                (score {fraud_score_display}/100). {risk_sentence}
+            </p>
+            <p style="margin-top:14px;"><strong>Prochaines étapes recommandées.</strong> {next_steps}</p>
+            <p style="margin-top:18px;font-size:12px;color:#94a3b8;font-style:italic;">
+                Cette synthèse est une aide à la décision générée automatiquement par AssuranceIA™
+                et ne se substitue pas à l'appréciation d'un expert mandaté.
+            </p>
+        </div>
+    </div>
+    """
 
     html = f"""
     <!DOCTYPE html>
@@ -1939,6 +2288,49 @@ def view_claim_details(claim_id: str):
                 border: 1px solid rgba(239, 68, 68, 0.3);
                 color: #fca5a5;
             }}
+            .attest-btn {{
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+                color: #ffffff;
+                border: none;
+                border-radius: 10px;
+                padding: 16px 28px;
+                font-size: 16px;
+                font-weight: 700;
+                cursor: pointer;
+                box-shadow: 0 6px 18px rgba(34, 197, 94, 0.35);
+                transition: transform 0.15s ease, box-shadow 0.15s ease;
+            }}
+            .attest-btn:hover {{
+                transform: translateY(-2px);
+                box-shadow: 0 10px 24px rgba(34, 197, 94, 0.45);
+            }}
+            .attest-btn:disabled {{
+                opacity: 0.6;
+                cursor: not-allowed;
+                transform: none;
+            }}
+            .attest-confirmed {{
+                display: flex;
+                align-items: center;
+                gap: 14px;
+                background: rgba(34, 197, 94, 0.1);
+                border: 1px solid rgba(34, 197, 94, 0.35);
+                border-radius: 10px;
+                padding: 18px 22px;
+            }}
+            .attest-check {{ font-size: 28px; }}
+            .conclusion-content {{
+                background: rgba(139, 92, 246, 0.06);
+                border: 1px solid rgba(139, 92, 246, 0.25);
+                border-left: 4px solid #8b5cf6;
+                border-radius: 8px;
+                padding: 24px;
+                color: #cbd5e1;
+                line-height: 1.6;
+            }}
         </style>
     </head>
     <body>
@@ -2015,9 +2407,51 @@ def view_claim_details(claim_id: str):
 
             {photos_html}
             {analysis_html}
+
+            <div class="section">
+                <h3>🖋️ Attestation sur l'honneur</h3>
+                <p style="color:#cbd5e1;line-height:1.6;margin-bottom:18px;">
+                    En attestant, le déclarant certifie l'exactitude et la sincérité
+                    des informations fournies dans la présente déclaration de sinistre.
+                </p>
+                <div id="attestContainer">
+                    {attestation_block}
+                </div>
+            </div>
+
+            {conclusion_html}
         </div>
 
         <script>
+        var CLAIM_ID = '{claim_id}';
+
+        function attestClaim() {{
+            if (!confirm("Confirmez-vous attester de la véracité de cette déclaration ? Cette action est définitive.")) {{
+                return;
+            }}
+            var btn = document.getElementById("attestBtn");
+            if (btn) {{ btn.disabled = true; btn.textContent = "Enregistrement..."; }}
+            fetch("/claims/" + CLAIM_ID + "/attest", {{
+                method: "POST",
+                headers: {{ "Content-Type": "application/x-www-form-urlencoded" }},
+                body: "attestation_confirmed=true"
+            }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
+                if (data && data.attestation_confirmed) {{
+                    var c = document.getElementById("attestContainer");
+                    c.innerHTML = '<div class="attest-confirmed"><span class="attest-check">✅</span>' +
+                        '<div><div style="font-weight:600;color:#86efac;">Déclaration attestée</div>' +
+                        '<div style="font-size:13px;color:#cbd5e1;margin-top:4px;">Attesté le ' +
+                        data.attestation_timestamp_display + '</div></div></div>';
+                }} else {{
+                    alert((data && data.detail) || "Erreur lors de l'attestation.");
+                    if (btn) {{ btn.disabled = false; btn.textContent = "✅ J'atteste de la véracité de cette déclaration"; }}
+                }}
+            }}).catch(function() {{
+                alert("Erreur réseau lors de l'attestation.");
+                if (btn) {{ btn.disabled = false; btn.textContent = "✅ J'atteste de la véracité de cette déclaration"; }}
+            }});
+        }}
+
         // Initialize map
         var lat = parseFloat('{js_lat}');
         var lon = parseFloat('{js_lon}');
@@ -2112,6 +2546,7 @@ async def submit_declaration(
     description: str = Form(""),
     phone_gps_lat: str = Form(None),
     phone_gps_lon: str = Form(None),
+    attestation_confirmed: bool = Form(False),
 ):
     """
     Client submits declaration via token link.
@@ -2171,6 +2606,9 @@ async def submit_declaration(
         "analysis": None,
         "status": "open",
         "created_at": datetime.now().isoformat(),
+        # Attestation: may be confirmed at submission time, or later via /attest.
+        "attestation_confirmed": bool(attestation_confirmed),
+        "attestation_timestamp": datetime.now().isoformat() if attestation_confirmed else None,
     }
 
     # Always store in memory first (guarantees the claim is retrievable even if
@@ -2201,7 +2639,59 @@ async def submit_declaration(
         "gps_verification": gps_verification,
         "message": "✅ Sinistre créé avec GPS vérifié. Uploadez les photos pour lancer l'analyse automatique.",
         "next_step": f"Uploadez photos via POST /claims/{claim_id}/photos",
-        "insurer_will_receive": f"PDF sera envoyé à {insurer_email} après analyse"
+        "insurer_will_receive": f"PDF sera envoyé à {insurer_email} après analyse",
+        "attestation_confirmed": bool(attestation_confirmed),
+        "attestation_timestamp": claim_data["attestation_timestamp"],
+    }
+
+
+@app.post("/claims/{claim_id}/attest")
+async def attest_claim(claim_id: str, attestation_confirmed: bool = Form(True)):
+    """Record the declarant's attestation of truthfulness for a claim.
+
+    Idempotent: once a claim is attested, re-posting returns the existing
+    attestation timestamp without overwriting it (HTTP 200, not an error).
+    Timestamp is stored in ISO format and returned both raw and formatted.
+    """
+    # Resolve the claim from in-memory first, then MongoDB.
+    claim = claims_db.get(claim_id)
+    if claim is None:
+        try:
+            claim = claims_collection.find_one({"claim_id": claim_id})
+        except Exception:
+            claim = None
+    if not claim:
+        raise HTTPException(status_code=404, detail="Sinistre non trouvé")
+
+    if not attestation_confirmed:
+        raise HTTPException(status_code=400, detail="Confirmation d'attestation requise.")
+
+    # Idempotency: don't re-attest if already attested.
+    if claim.get("attestation_confirmed") and claim.get("attestation_timestamp"):
+        ts = claim["attestation_timestamp"]
+        return {
+            "claim_id": claim_id,
+            "attestation_confirmed": True,
+            "attestation_timestamp": ts,
+            "attestation_timestamp_display": format_french_datetime(ts),
+            "already_attested": True,
+            "message": "Déclaration déjà attestée.",
+        }
+
+    timestamp = datetime.now().isoformat()
+    _persist_claim_field(claim_id, {
+        "attestation_confirmed": True,
+        "attestation_timestamp": timestamp,
+    })
+
+    logger.info("🖋️ Claim %s attested at %s", claim_id, timestamp)
+    return {
+        "claim_id": claim_id,
+        "attestation_confirmed": True,
+        "attestation_timestamp": timestamp,
+        "attestation_timestamp_display": format_french_datetime(timestamp),
+        "already_attested": False,
+        "message": "Déclaration attestée avec succès.",
     }
 
 
