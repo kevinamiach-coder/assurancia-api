@@ -1,4 +1,5 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+import logging
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
@@ -29,13 +30,28 @@ CLAUDE_MODEL = "claude-opus-4-6"  # Vision model - using Opus for better analysi
 # Initialize Anthropic client
 client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
+# ----------------------------------------------------------------------------
+# Logging
+# ----------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("assurancia")
+
 # MongoDB Connection
 MONGODB_URI = os.getenv("MONGODB_URI") or "mongodb+srv://artisanpatrimoinefrancais_db_user:REMOVED@cluster0.ac2vlvx.mongodb.net/?appName=Cluster0"
-mongo_client = MongoClient(MONGODB_URI)
+
+# serverSelectionTimeoutMS keeps the app responsive if Mongo is unreachable
+# instead of hanging for ~30s on every request.
+mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
 db = mongo_client["assurancia"]
 declaration_links_collection = db["declaration_links"]
 claims_collection = db["claims"]
 token_to_claim_collection = db["token_to_claim"]
+
+# Set to True when a real connection to MongoDB has been verified at startup.
+MONGO_AVAILABLE = False
 
 # In-memory storage (fallback for local dev). Production uses MongoDB above.
 claims_db: dict = {}
@@ -58,9 +74,24 @@ app.add_middleware(
 # ========== STARTUP: Load declaration links from MongoDB ==========
 @app.on_event("startup")
 async def load_declaration_links_from_mongodb():
-    """Load declaration links from MongoDB on app startup."""
+    """Verify MongoDB connection and load declaration links on app startup."""
+    global declaration_links, MONGO_AVAILABLE
+
+    # 1. Verify the connection with a ping (raises if Mongo is unreachable / SSL fails).
     try:
-        global declaration_links
+        mongo_client.admin.command("ping")
+        MONGO_AVAILABLE = True
+        logger.info("✅ MongoDB connection verified (ping OK).")
+    except Exception as e:
+        MONGO_AVAILABLE = False
+        logger.error(f"❌ MongoDB connection FAILED at startup: {e!r}")
+        logger.error("   → App will run in IN-MEMORY fallback mode. Data will NOT persist across restarts.")
+
+    # 2. Load existing declaration links (only if Mongo is available).
+    if not MONGO_AVAILABLE:
+        return
+    try:
+        count = 0
         for doc in declaration_links_collection.find({}, {"_id": 0}):
             token = doc.get("token")
             if token:
@@ -70,8 +101,10 @@ async def load_declaration_links_from_mongodb():
                     "created_at": doc.get("created_at", ""),
                     "status": doc.get("status", "pending")
                 }
+                count += 1
+        logger.info(f"✅ Loaded {count} declaration link(s) from MongoDB.")
     except Exception as e:
-        print(f"⚠️  Warning: Could not load declaration links from MongoDB: {e}")
+        logger.warning(f"⚠️  Could not load declaration links from MongoDB: {e!r}")
 
 
 # ----------------------------------------------------------------------------
@@ -750,11 +783,21 @@ def create_declaration_link(request: DeclarationLinkRequest):
 
 @app.get("/dashboard")
 async def dashboard():
-    """Dashboard to view all claims from MongoDB."""
+    """Dashboard to view all claims from MongoDB (falls back to in-memory)."""
     try:
         claims_list = list(claims_collection.find({}, {"_id": 0}).sort("created_at", -1))
-    except:
+    except Exception as e:
+        logger.warning("⚠️  Dashboard could not read from MongoDB: %r — using in-memory fallback.", e)
         claims_list = []
+
+    # Fallback / merge: if Mongo returned nothing but we have in-memory claims,
+    # show those so the dashboard is never wrongly empty.
+    if not claims_list and claims_db:
+        claims_list = sorted(
+            [{k: v for k, v in c.items() if k != "_id"} for c in claims_db.values()],
+            key=lambda c: c.get("created_at", ""),
+            reverse=True,
+        )
 
     html = f"""
     <!DOCTYPE html>
@@ -2058,11 +2101,33 @@ def send_claim_links(claim_id: str):
 
 
 @app.post("/declare/{token}/submit")
-async def submit_declaration(token: str, user_email: str = "", firstname: str = "", lastname: str = "", phone: str = "", damage_type: str = "", address: str = "", description: str = "", phone_gps_lat: str = None, phone_gps_lon: str = None):
+async def submit_declaration(
+    token: str,
+    user_email: str = Form(""),
+    firstname: str = Form(""),
+    lastname: str = Form(""),
+    phone: str = Form(""),
+    damage_type: str = Form(""),
+    address: str = Form(""),
+    description: str = Form(""),
+    phone_gps_lat: str = Form(None),
+    phone_gps_lon: str = Form(None),
+):
     """
     Client submits declaration via token link.
     Creates claim + stores insurer email + verifies GPS location.
+
+    NOTE: parameters use Form(...) because the frontend submits multipart/form-data
+    (FormData). Plain str params would be read as query params and arrive empty.
     """
+    # Log exactly what arrived so we can never again wonder if data was received.
+    logger.info(
+        "📥 submit_declaration token=%s | email=%r firstname=%r lastname=%r "
+        "phone=%r type=%r address=%r desc_len=%d gps=(%s,%s)",
+        token, user_email, firstname, lastname, phone, damage_type,
+        address, len(description or ""), phone_gps_lat, phone_gps_lon,
+    )
+
     if token not in declaration_links:
         raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
 
@@ -2108,20 +2173,29 @@ async def submit_declaration(token: str, user_email: str = "", firstname: str = 
         "created_at": datetime.now().isoformat(),
     }
 
+    # Always store in memory first (guarantees the claim is retrievable even if
+    # Mongo is down — endpoints fall back to claims_db).
     claims_db[claim_id] = claim_data
     token_to_claim[unique_token] = claim_id
     # Token remains valid for reuse - don't mark as "completed"
     # This allows the same token to be used for multiple declarations
 
-    # Save to MongoDB
+    # Save to MongoDB. insert_one() mutates the dict by adding "_id" (a non-JSON-
+    # serializable ObjectId), so insert a COPY to keep claims_db clean.
+    mongo_saved = False
+    mongo_error = None
     try:
-        result = claims_collection.insert_one(claim_data)
-        print(f"✅ MongoDB insert successful: {result.inserted_id}")
+        result = claims_collection.insert_one(dict(claim_data))
+        mongo_saved = True
+        logger.info("✅ MongoDB insert OK: claim_id=%s _id=%s", claim_id, result.inserted_id)
     except Exception as e:
-        print(f"❌ MongoDB insert error: {e}")
-        print(f"❌ Trying to insert: {claim_data}")
+        mongo_error = str(e)
+        logger.error("❌ MongoDB insert FAILED for claim_id=%s: %r", claim_id, e)
+        logger.error("   → Claim is still available in-memory (fallback). Fix Mongo to persist.")
 
     return {
+        "mongo_saved": mongo_saved,
+        "mongo_error": mongo_error,
         "claim_id": claim_id,
         "unique_token": unique_token,
         "gps_verification": gps_verification,
