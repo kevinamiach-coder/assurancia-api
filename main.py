@@ -730,6 +730,280 @@ def analyze_claim_photos_with_claude(claim_id: str, photos: list) -> dict:
     return analysis
 
 
+def build_public_analysis(analysis: dict | None, claim_data: dict) -> dict:
+    """Normalize the internal Vision analysis into the documented public shape.
+
+    Output structure (always returns these keys, with safe fallbacks):
+        {
+          "summary": str,
+          "damage_type": str,
+          "severity": "High" | "Medium" | "Low",
+          "estimated_cost": "€XXX - €YYY",
+          "recommendations": [str, ...],
+          "analyzed_at": ISO timestamp,
+          ... (internal fields preserved for fraud checks / viewer compat)
+        }
+    Never raises — falls back to an "analysis pending" object on bad input.
+    """
+    try:
+        analysis = analysis if isinstance(analysis, dict) else {}
+
+        # --- summary ---
+        summary = analysis.get("summary") or analysis.get("visible_damage") \
+            or "Analyse Claude Vision effectuée."
+
+        # --- damage_type ---
+        damage_type = analysis.get("detected_damage_type") \
+            or claim_data.get("damage_type") or "Non déterminé"
+
+        # --- severity (map low/medium/high/critical + numeric score → High/Medium/Low) ---
+        raw_sev = str(analysis.get("damage_severity", "")).lower()
+        sev_map = {
+            "low": "Low", "faible": "Low",
+            "medium": "Medium", "moderate": "Medium", "modérée": "Medium",
+            "high": "High", "élevée": "High",
+            "critical": "High", "critique": "High",
+        }
+        severity = sev_map.get(raw_sev)
+        if severity is None:
+            # Try a numeric 1-10 score if present.
+            score_val = analysis.get("severity_score") or analysis.get("severity")
+            try:
+                n = float(score_val)
+                severity = "High" if n >= 7 else "Medium" if n >= 4 else "Low"
+            except (TypeError, ValueError):
+                severity = "Medium" if analysis else "Low"
+
+        # --- estimated_cost as a "€XXX - €YYY" range ---
+        cost = analysis.get("estimated_cost_eur") or analysis.get("estimated_cost")
+        estimated_cost = "N/A"
+        try:
+            base = int(float(cost))
+            if base > 0:
+                low = int(base * 0.8)
+                high = int(base * 1.2)
+                estimated_cost = f"€{low} - €{high}"
+        except (TypeError, ValueError):
+            if isinstance(cost, str) and cost.strip():
+                estimated_cost = cost.strip()
+
+        # --- recommendations (list) ---
+        recs = analysis.get("recommendations")
+        if not isinstance(recs, list) or not recs:
+            single = analysis.get("recommendation")
+            recs = [single] if single else ["Inspection manuelle recommandée."]
+        recs = [str(r) for r in recs if r]
+
+        public = {
+            "summary": str(summary),
+            "damage_type": str(damage_type),
+            "severity": severity,
+            "estimated_cost": estimated_cost,
+            "recommendations": recs,
+            "analyzed_at": analysis.get("analyzed_at") or datetime.now().isoformat(),
+        }
+
+        # Preserve internal fields so existing viewer code + fraud checks keep working.
+        for key in ("detected_damage_type", "damage_severity", "estimated_cost_eur",
+                    "recommendation", "fraud_score", "fraud_indicators",
+                    "is_ai_generated_or_manipulated", "confidence",
+                    "consistency_with_declaration", "visible_damage",
+                    "location_verification"):
+            if key in analysis and key not in public:
+                public[key] = analysis[key]
+        return public
+    except Exception as e:
+        logger.error("❌ build_public_analysis failed: %r", e)
+        return {
+            "summary": "Analyse en attente.",
+            "damage_type": claim_data.get("damage_type", "Non déterminé"),
+            "severity": "Low",
+            "estimated_cost": "N/A",
+            "recommendations": ["Inspection manuelle recommandée."],
+            "analyzed_at": datetime.now().isoformat(),
+        }
+
+
+def _damage_types_consistent(declared: str, detected: str) -> bool:
+    """Best-effort check that a declared damage type and a Vision-detected type
+    belong to the same category. Returns True when consistent (or undeterminable).
+    """
+    declared = (declared or "").lower().strip()
+    detected = (detected or "").lower().strip()
+    if not declared or not detected or detected == "autre":
+        return True  # Can't conclude inconsistency -> don't penalize.
+
+    # Group everything into coarse categories.
+    categories = {
+        "water": ["water", "fuite", "leak", "inondation", "flood", "pipe",
+                  "canalisation", "rupture", "infiltration", "toiture", "roof",
+                  "moisissure", "appliance", "degat", "eau", "burst"],
+        "car": ["car", "accident", "collision", "vehicle", "vehicule", "auto",
+                "automobile", "vandalism", "vandalisme", "circulation"],
+        "burglary": ["break-in", "effraction", "intrusion", "theft", "vol",
+                     "cambriolage"],
+        "fire": ["fire", "incendie", "burn", "feu"],
+        "weather": ["hail", "grele", "storm", "tempete", "wind", "vent"],
+    }
+
+    def cat_of(value: str) -> set:
+        found = set()
+        for cat, kws in categories.items():
+            if any(kw in value for kw in kws):
+                found.add(cat)
+        return found
+
+    declared_cats = cat_of(declared)
+    detected_cats = cat_of(detected)
+    if not declared_cats or not detected_cats:
+        return True  # One side unknown -> don't penalize.
+    return bool(declared_cats & detected_cats)
+
+
+def calculate_fraud_score(claim_data: dict, analysis_result: dict | None = None,
+                          additional_factors: dict | None = None) -> int:
+    """Compute a comprehensive fraud score (0-100+) for a claim.
+
+    Combines claim data, the Claude Vision analysis, and database-derived
+    checks (additional_factors). Each contributing factor is logged. Always
+    returns an integer; on any unexpected error it returns 0 so the caller is
+    never blocked.
+
+    Scoring factors:
+        +40  GPS mismatch with declared address
+        +30  Damage type inconsistency (declared vs Vision-detected)
+        +25  Multiple claims at same address in last 30 days
+        +20  Multiple claims by same user in last 7 days
+        +50  Photo quality / authenticity issues (blurry, fake, AI-generated)
+        +15  Submitted at a suspicious hour (02:00-05:00)
+        +10  Unusually short damage description (< 10 words)
+        +35  Photo EXIF timestamp mismatch (if available)
+    """
+    try:
+        analysis_result = analysis_result or {}
+        additional_factors = additional_factors or {}
+        score = 0
+
+        def add(points: int, reason: str):
+            nonlocal score
+            score += points
+            logger.info("🔎 fraud_score +%d → %s (running=%d)", points, reason, score)
+
+        # +40 GPS mismatch with declared address
+        gps_ver = claim_data.get("gps_verification") or {}
+        gps_flag = gps_ver.get("flag")
+        gps_matches = gps_ver.get("matches")
+        if gps_flag == "LOCATION_MISMATCH" or (gps_matches is False and gps_flag not in ("NO_GPS_DATA", None)):
+            dist = gps_ver.get("distance_km")
+            add(40, f"GPS mismatch with address (distance={dist}km)")
+
+        # +30 Damage type inconsistency (declared vs Vision-detected)
+        declared_type = claim_data.get("damage_type", "")
+        detected_type = analysis_result.get("detected_damage_type", "")
+        if detected_type and not _damage_types_consistent(declared_type, detected_type):
+            add(30, f"Damage type inconsistency (declared='{declared_type}' vs detected='{detected_type}')")
+
+        # +25 Multiple claims same address in last 30 days
+        if int(additional_factors.get("address_claims_30d", 0)) > 1:
+            add(25, f"Multiple claims same address in 30 days ({additional_factors.get('address_claims_30d')})")
+
+        # +20 Multiple claims same user in last 7 days
+        if int(additional_factors.get("user_claims_7d", 0)) > 1:
+            add(20, f"Multiple claims same user in 7 days ({additional_factors.get('user_claims_7d')})")
+
+        # +50 Photo quality / authenticity issues
+        ai_status = str(analysis_result.get("is_ai_generated_or_manipulated", "")).lower()
+        confidence = str(analysis_result.get("confidence", "")).lower()
+        photo_quality_flag = additional_factors.get("photo_quality_issue", False)
+        if ai_status in ("suspicious", "likely_ai", "likely_manipulated") or photo_quality_flag:
+            add(50, f"Photo quality/authenticity issue (ai_status='{ai_status}', flagged={photo_quality_flag})")
+        elif confidence == "low" and analysis_result.get("detected_damage_type"):
+            # Low confidence often signals blurry / unreadable photos.
+            add(50, "Photo quality issue (low Vision confidence)")
+
+        # +15 Suspicious submission time (02:00-05:00 local)
+        created_at = claim_data.get("created_at")
+        if created_at:
+            try:
+                hour = datetime.fromisoformat(str(created_at)).hour
+                if 2 <= hour < 5:
+                    add(15, f"Suspicious submission time ({hour:02d}h)")
+            except (ValueError, TypeError):
+                pass
+
+        # +10 Unusually short description (< 10 words)
+        desc = claim_data.get("description", "") or ""
+        if 0 < len(desc.split()) < 10:
+            add(10, f"Short description ({len(desc.split())} words)")
+
+        # +35 EXIF timestamp mismatch (if available)
+        if additional_factors.get("exif_timestamp_mismatch"):
+            add(35, "Photo EXIF timestamp mismatch")
+
+        logger.info("✅ Final fraud_score for claim_id=%s: %d",
+                    claim_data.get("claim_id"), score)
+        return int(score)
+    except Exception as e:
+        logger.error("❌ calculate_fraud_score failed: %r — returning 0", e)
+        return 0
+
+
+def compute_additional_fraud_factors(claim_data: dict) -> dict:
+    """Derive database-backed fraud factors (multi-claim patterns, EXIF mismatch)
+    from in-memory claims_db. All best-effort; returns safe defaults on error.
+    """
+    factors = {
+        "address_claims_30d": 0,
+        "user_claims_7d": 0,
+        "exif_timestamp_mismatch": False,
+        "photo_quality_issue": False,
+    }
+    try:
+        now = datetime.now()
+        addr = (claim_data.get("address") or "").lower().strip()
+        email = (claim_data.get("user_email") or "").lower().strip()
+        this_id = claim_data.get("claim_id")
+
+        for cid, c in claims_db.items():
+            if cid == this_id:
+                continue
+            created = c.get("created_at")
+            if not created:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(created))
+            except (ValueError, TypeError):
+                continue
+            days = (now - dt).total_seconds() / 86400.0
+            if addr and (c.get("address") or "").lower().strip() == addr and days <= 30:
+                factors["address_claims_30d"] += 1
+            if email and (c.get("user_email") or "").lower().strip() == email and days <= 7:
+                factors["user_claims_7d"] += 1
+
+        # Count this claim itself so ">1" means at least one *other* matching claim.
+        factors["address_claims_30d"] += 1
+        factors["user_claims_7d"] += 1
+
+        # EXIF timestamp mismatch: photo taken >30 days before the claim.
+        photos = claim_data.get("photos") or []
+        for p in photos:
+            if isinstance(p, dict) and p.get("exif_datetime"):
+                exif = p["exif_datetime"]
+                photo_dt = exif.get("datetime") if isinstance(exif, dict) else None
+                if isinstance(photo_dt, str):
+                    try:
+                        photo_dt = datetime.fromisoformat(photo_dt)
+                    except (ValueError, TypeError):
+                        photo_dt = None
+                if isinstance(photo_dt, datetime):
+                    if abs((now - photo_dt).total_seconds() / 86400.0) > 30:
+                        factors["exif_timestamp_mismatch"] = True
+                break
+    except Exception as e:
+        logger.warning("⚠️ compute_additional_fraud_factors failed: %r", e)
+    return factors
+
+
 # ----------------------------------------------------------------------------
 # Routes
 # ----------------------------------------------------------------------------
@@ -1132,10 +1406,10 @@ async def dashboard():
             fraud_score = claim.get("fraud_score", 0)
             created = claim.get("created_at", "N/A")[:10]
 
-            # Fraud status badge
-            if fraud_score < 20:
+            # Fraud status badge (bands: 0-20 green, 21-50 orange, 51+ red)
+            if fraud_score <= 20:
                 status = '<span class="status low">✓ Fiable</span>'
-            elif fraud_score < 60:
+            elif fraud_score <= 50:
                 status = '<span class="status medium">⚠ Attention</span>'
             else:
                 status = '<span class="status high">🚨 Suspect</span>'
@@ -1674,6 +1948,43 @@ def get_declaration_form(token: str):
                     cursor: not-allowed;
                 }
 
+                .attest-box {
+                    background: rgba(34, 197, 94, 0.08);
+                    border: 2px solid rgba(34, 197, 94, 0.35);
+                    border-radius: 10px;
+                    padding: 18px 20px;
+                    margin-bottom: 25px;
+                }
+
+                .attest-label {
+                    display: flex;
+                    align-items: center;
+                    gap: 12px;
+                    cursor: pointer;
+                    margin-bottom: 0;
+                    text-transform: none;
+                    letter-spacing: normal;
+                    font-size: 15px;
+                    color: #f1f5f9;
+                    line-height: 1.5;
+                }
+
+                .attest-label input[type="checkbox"] {
+                    width: 22px;
+                    height: 22px;
+                    min-width: 22px;
+                    accent-color: #22c55e;
+                    cursor: pointer;
+                }
+
+                .attest-check-icon {
+                    font-size: 20px;
+                }
+
+                .attest-text {
+                    font-weight: 600;
+                }
+
                 #status {
                     margin-top: 25px;
                     padding: 20px;
@@ -1802,6 +2113,15 @@ def get_declaration_form(token: str):
                         <input type="hidden" id="gpsLat" name="gpsLat">
                         <input type="hidden" id="gpsLon" name="gpsLon">
 
+                        <!-- Attestation sur l'honneur - OBLIGATOIRE -->
+                        <div class="attest-box">
+                            <label class="attest-label" for="attestation">
+                                <input type="checkbox" id="attestation" name="attestation" required>
+                                <span class="attest-check-icon">✅</span>
+                                <span class="attest-text">J'atteste sur l'honneur la véracité des informations <span class="required">*</span></span>
+                            </label>
+                        </div>
+
                         <!-- Submit Button -->
                         <button type="submit" class="submit-button">🚀 Soumettre ma déclaration</button>
                     </form>
@@ -1860,6 +2180,16 @@ def get_declaration_form(token: str):
                     return;
                 }
 
+                const attestEl = document.getElementById("attestation");
+                if (!attestEl || !attestEl.checked) {
+                    alert("Vous devez attester sur l'honneur la véracité des informations avant de soumettre.");
+                    if (attestEl) { attestEl.focus(); }
+                    return;
+                }
+
+                const submitBtn = document.querySelector(".submit-button");
+                if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "⏳ Analyse en cours..."; }
+
                 const formData = new FormData();
                 formData.append("user_email", document.getElementById("email").value);
                 formData.append("firstname", document.getElementById("firstname").value);
@@ -1870,7 +2200,16 @@ def get_declaration_form(token: str):
                 formData.append("description", document.getElementById("description").value);
                 formData.append("phone_gps_lat", currentGPS.lat);
                 formData.append("phone_gps_lon", currentGPS.lon);
+                formData.append("attestation_confirmed", "true");
                 formData.append("token", token);
+
+                // Attach photos (optional, multiple)
+                const photoInput = document.getElementById("photos");
+                if (photoInput && photoInput.files) {
+                    for (let i = 0; i < photoInput.files.length; i++) {
+                        formData.append("photos", photoInput.files[i]);
+                    }
+                }
 
                 fetch(apiUrl + "/declare/" + token + "/submit", {
                     method: "POST",
@@ -1886,9 +2225,11 @@ def get_declaration_form(token: str):
                         document.getElementById("declarationForm").style.display = "none";
                     } else {
                         alert("Erreur");
+                        if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "🚀 Soumettre ma déclaration"; }
                     }
                 }).catch(function(err) {
                     alert("Erreur reseau");
+                    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "🚀 Soumettre ma déclaration"; }
                 });
             });
             </script>
@@ -1960,9 +2301,9 @@ def view_claim_details(claim_id: str):
         fraud_score = float(fraud_score)
     except (TypeError, ValueError):
         fraud_score = 0
-    if fraud_score < 20:
+    if fraud_score <= 20:
         fraud_status = '<span class="badge low">✓ Fiable</span>'
-    elif fraud_score < 60:
+    elif fraud_score <= 50:
         fraud_status = '<span class="badge medium">⚠ Attention</span>'
     else:
         fraud_status = '<span class="badge high">🚨 Suspect</span>'
@@ -1989,13 +2330,20 @@ def view_claim_details(claim_id: str):
     if analysis:
         if isinstance(analysis, dict):
             a_summary = analysis.get("summary") or "Pas de résumé disponible."
-            a_type = analysis.get("detected_damage_type", "Non déterminé")
-            a_severity = analysis.get("damage_severity", "Non déterminée")
-            a_reco = analysis.get("recommendation", "Aucune recommandation.")
-            a_cost = analysis.get("estimated_cost_eur", analysis.get("estimated_cost"))
+            a_type = analysis.get("damage_type") or analysis.get("detected_damage_type", "Non déterminé")
+            a_severity = analysis.get("severity") or analysis.get("damage_severity", "Non déterminée")
+            # Prefer the public recommendations list; fall back to legacy single string.
+            a_recs = analysis.get("recommendations")
+            if isinstance(a_recs, list) and a_recs:
+                a_reco = "<ul style='margin:0;padding-left:18px;'>" + "".join(
+                    f"<li>{r}</li>" for r in a_recs) + "</ul>"
+            else:
+                a_reco = analysis.get("recommendation", "Aucune recommandation.")
+            # estimated_cost may be a "€X - €Y" string (public) or a numeric (legacy).
+            a_cost = analysis.get("estimated_cost") or analysis.get("estimated_cost_eur")
             a_analyzed = format_french_datetime(analysis.get("analyzed_at")) if analysis.get("analyzed_at") else None
 
-            # Severity badge styling
+            # Severity badge styling (handles both public High/Medium/Low and legacy low/high)
             sev_map = {
                 "low": ("badge low", "Faible"),
                 "medium": ("badge medium", "Modérée"),
@@ -2005,11 +2353,13 @@ def view_claim_details(claim_id: str):
             sev_class, sev_label = sev_map.get(str(a_severity).lower(), ("badge medium", str(a_severity)))
 
             cost_row = ""
-            if a_cost not in (None, "", 0):
+            if a_cost not in (None, "", 0, "N/A"):
+                # If it's already a formatted "€..." string, don't append a second €.
+                cost_display = str(a_cost) if str(a_cost).strip().startswith("€") else f"{a_cost} €"
                 cost_row = f"""
                 <div class="info-item">
                     <div class="info-label">Coût estimé</div>
-                    <div class="info-value">{a_cost} €</div>
+                    <div class="info-value">{cost_display}</div>
                 </div>"""
 
             analyzed_row = ""
@@ -2081,7 +2431,8 @@ def view_claim_details(claim_id: str):
         """
 
     # --- Conclusion section (professional insurance wording) ---
-    if fraud_score < 20:
+    # Bands: 0-20 faible (vert), 21-50 modéré (orange), 51+ élevé (rouge).
+    if fraud_score <= 20:
         risk_label = "FAIBLE"
         risk_color = "#86efac"
         risk_sentence = (
@@ -2092,7 +2443,7 @@ def view_claim_details(claim_id: str):
             "Procéder à la validation du dossier et à l'évaluation chiffrée des indemnités. "
             "Une expertise sur site reste recommandée pour les sinistres de gravité élevée."
         )
-    elif fraud_score < 60:
+    elif fraud_score <= 50:
         risk_label = "MODÉRÉ"
         risk_color = "#fbbf24"
         risk_sentence = (
@@ -2547,6 +2898,7 @@ async def submit_declaration(
     phone_gps_lat: str = Form(None),
     phone_gps_lon: str = Form(None),
     attestation_confirmed: bool = Form(False),
+    photos: list[UploadFile] = File(default=[]),
 ):
     """
     Client submits declaration via token link.
@@ -2618,17 +2970,92 @@ async def submit_declaration(
     # Token remains valid for reuse - don't mark as "completed"
     # This allows the same token to be used for multiple declarations
 
-    # Save to MongoDB. insert_one() mutates the dict by adding "_id" (a non-JSON-
-    # serializable ObjectId), so insert a COPY to keep claims_db clean.
+    # ---- Process inline photos from the FormData (optional) ----------------
+    # Photos uploaded with the declaration are read, validated, EXIF-parsed and
+    # attached to the claim so Vision analysis + EXIF fraud checks can run.
+    photo_count = 0
+    for upload in (photos or []):
+        try:
+            contents = await upload.read()
+        except Exception as e:
+            logger.warning("⚠️ Could not read uploaded photo %r: %r", getattr(upload, "filename", "?"), e)
+            continue
+        if not contents:
+            continue
+        if len(contents) > MAX_PHOTO_BYTES:
+            logger.warning("⚠️ Skipping oversized photo %r (%d bytes)", upload.filename, len(contents))
+            continue
+        media_type = normalize_media_type(upload.content_type)
+        if media_type is None:
+            logger.warning("⚠️ Skipping unsupported photo type %r (%s)", upload.filename, upload.content_type)
+            continue
+        try:
+            photo_entry = {
+                "filename": upload.filename,
+                "content_type": media_type,
+                "data": base64.b64encode(contents).decode("utf-8"),
+                "gps": extract_gps_from_exif(contents),
+                "exif_datetime": extract_exif_datetime(contents),
+                "image_hash": calculate_image_hash(contents),
+            }
+            claim_data["photos"].append(photo_entry)
+            photo_count += 1
+        except Exception as e:
+            logger.warning("⚠️ Failed to process photo %r: %r", upload.filename, e)
+
+    logger.info("📸 submit_declaration attached %d photo(s) to %s", photo_count, claim_id)
+
+    # ---- Claude Vision analysis (best-effort, never blocks claim creation) --
+    # On any error, analyze_claim_photos_with_claude returns a structured
+    # "analysis pending" dict — the claim always survives.
+    analysis = None
+    try:
+        analysis = analyze_claim_photos_with_claude(claim_id, claim_data["photos"])
+    except Exception as e:
+        logger.error("❌ Vision analysis failed in submit_declaration claim_id=%s: %r", claim_id, e)
+        analysis = {
+            "summary": "Analyse en attente (erreur technique).",
+            "detected_damage_type": damage_type,
+            "damage_severity": "unknown",
+            "analyzed_at": datetime.now().isoformat(),
+        }
+        claim_data["analysis"] = analysis
+
+    # Normalize the analysis into the documented public structure and store it.
+    public_analysis = build_public_analysis(analysis, claim_data)
+    claim_data["analysis"] = public_analysis
+
+    # ---- Fraud scoring (always returns a number) ---------------------------
+    additional_factors = compute_additional_fraud_factors(claim_data)
+    fraud_score = calculate_fraud_score(claim_data, analysis, additional_factors)
+    claim_data["fraud_score"] = fraud_score
+    claim_data["fraud_factors"] = additional_factors
+
+    # ---- Persist analysis + fraud_score to MongoDB AND in-memory -----------
+    _persist_claim_field(claim_id, {
+        "photos": claim_data["photos"],
+        "analysis": public_analysis,
+        "fraud_score": fraud_score,
+        "fraud_factors": additional_factors,
+    })
+
+    # Save the full claim document to MongoDB. insert_one() mutates the dict by
+    # adding "_id" (non-JSON-serializable ObjectId), so insert a COPY.
     mongo_saved = False
     mongo_error = None
     try:
-        result = claims_collection.insert_one(dict(claim_data))
+        # Remove any prior _id from a possible _persist_claim_field upsert path.
+        doc = {k: v for k, v in claim_data.items() if k != "_id"}
+        existing = claims_collection.find_one({"claim_id": claim_id})
+        if existing:
+            claims_collection.update_one({"claim_id": claim_id}, {"$set": doc})
+        else:
+            claims_collection.insert_one(dict(doc))
         mongo_saved = True
-        logger.info("✅ MongoDB insert OK: claim_id=%s _id=%s", claim_id, result.inserted_id)
+        logger.info("✅ MongoDB save OK: claim_id=%s", claim_id)
     except Exception as e:
         mongo_error = str(e)
-        logger.error("❌ MongoDB insert FAILED for claim_id=%s: %r", claim_id, e)
+        logger.error("❌ MongoDB save FAILED for claim_id=%s: %r", claim_id, e)
         logger.error("   → Claim is still available in-memory (fallback). Fix Mongo to persist.")
 
     return {
@@ -2637,8 +3064,11 @@ async def submit_declaration(
         "claim_id": claim_id,
         "unique_token": unique_token,
         "gps_verification": gps_verification,
-        "message": "✅ Sinistre créé avec GPS vérifié. Uploadez les photos pour lancer l'analyse automatique.",
-        "next_step": f"Uploadez photos via POST /claims/{claim_id}/photos",
+        "photo_count": photo_count,
+        "analysis": public_analysis,
+        "fraud_score": fraud_score,
+        "message": "✅ Sinistre créé, analysé et scoré. Consultez le détail du dossier.",
+        "next_step": f"Consultez le détail via /claim/{claim_id}",
         "insurer_will_receive": f"PDF sera envoyé à {insurer_email} après analyse",
         "attestation_confirmed": bool(attestation_confirmed),
         "attestation_timestamp": claim_data["attestation_timestamp"],
