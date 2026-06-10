@@ -2104,9 +2104,11 @@ def get_declaration_form(token: str):
 
                         <!-- Photos -->
                         <div class="form-group">
-                            <label for="photos">📸 Photos des dégâts (optionnel)</label>
+                            <label for="photos">📸 Photos des dégâts (jusqu'à 10)</label>
                             <input type="file" id="photos" name="photos" multiple accept="image/*">
-                            <p class="info-text">Uploadez plusieurs photos pour une analyse meilleure</p>
+                            <p class="info-text">Uploadez plusieurs photos pour une analyse meilleure (max 5 Mo / photo)</p>
+                            <p id="photoCount" style="margin-top:8px;font-weight:600;color:#60a5fa;">0/10 photos</p>
+                            <div id="photoPreviews" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;"></div>
                         </div>
 
                         <!-- Hidden GPS fields -->
@@ -2135,6 +2137,55 @@ def get_declaration_form(token: str):
             const token = '{token}';
             const apiUrl = window.location.origin;
             let currentGPS = null;
+
+            // --- Multi-photo selection with previews, removal, and count ---
+            const MAX_PHOTOS = 10;
+            const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+            let selectedPhotos = [];  // persistent list of File objects
+
+            function renderPhotoPreviews() {
+                const wrap = document.getElementById("photoPreviews");
+                const counter = document.getElementById("photoCount");
+                wrap.innerHTML = "";
+                selectedPhotos.forEach(function(file, idx) {
+                    const cell = document.createElement("div");
+                    cell.style.cssText = "position:relative;width:90px;height:90px;border-radius:8px;overflow:hidden;border:2px solid rgba(148,163,184,0.3);";
+                    const img = document.createElement("img");
+                    img.style.cssText = "width:100%;height:100%;object-fit:cover;";
+                    img.src = URL.createObjectURL(file);
+                    img.onload = function() { URL.revokeObjectURL(img.src); };
+                    const rm = document.createElement("button");
+                    rm.type = "button";
+                    rm.textContent = "✕";
+                    rm.title = "Retirer";
+                    rm.style.cssText = "position:absolute;top:2px;right:2px;width:22px;height:22px;border:none;border-radius:50%;background:rgba(239,68,68,0.9);color:#fff;font-weight:700;cursor:pointer;line-height:1;";
+                    rm.addEventListener("click", function() {
+                        selectedPhotos.splice(idx, 1);
+                        renderPhotoPreviews();
+                    });
+                    cell.appendChild(img);
+                    cell.appendChild(rm);
+                    wrap.appendChild(cell);
+                });
+                counter.textContent = selectedPhotos.length + "/" + MAX_PHOTOS + " photos";
+            }
+
+            document.getElementById("photos").addEventListener("change", function(e) {
+                const files = Array.from(e.target.files || []);
+                files.forEach(function(f) {
+                    if (selectedPhotos.length >= MAX_PHOTOS) {
+                        alert("Maximum " + MAX_PHOTOS + " photos.");
+                        return;
+                    }
+                    if (f.size > MAX_PHOTO_BYTES) {
+                        alert("Photo trop volumineuse (max 5 Mo): " + f.name);
+                        return;
+                    }
+                    selectedPhotos.push(f);
+                });
+                e.target.value = "";  // allow re-selecting the same file later
+                renderPhotoPreviews();
+            });
 
             document.getElementById("gpsBtn").addEventListener("click", function(e) {
                 e.preventDefault();
@@ -2203,13 +2254,10 @@ def get_declaration_form(token: str):
                 formData.append("attestation_confirmed", "true");
                 formData.append("token", token);
 
-                // Attach photos (optional, multiple)
-                const photoInput = document.getElementById("photos");
-                if (photoInput && photoInput.files) {
-                    for (let i = 0; i < photoInput.files.length; i++) {
-                        formData.append("photos", photoInput.files[i]);
-                    }
-                }
+                // Attach photos from the curated list (previews/removal applied)
+                selectedPhotos.forEach(function(f) {
+                    formData.append("photos", f);
+                });
 
                 fetch(apiUrl + "/declare/" + token + "/submit", {
                     method: "POST",
@@ -2221,7 +2269,10 @@ def get_declaration_form(token: str):
                         const statusDiv = document.getElementById("status");
                         statusDiv.className = "success-message";
                         statusDiv.style.display = "block";
-                        statusDiv.innerHTML = "<h3>Sinistre declare!</h3><p>Reference: " + data.claim_id + "</p>";
+                        var pdfUrl = apiUrl + "/claim/" + data.claim_id + "/pdf";
+                        statusDiv.innerHTML = "<h3>Sinistre declare!</h3><p>Reference: " + data.claim_id + "</p>" +
+                            "<p style='margin-top:12px;'>" + (data.photo_count || 0) + " photo(s) recue(s).</p>" +
+                            "<p style='margin-top:12px;'><a href='" + pdfUrl + "' style='color:#60a5fa;font-weight:600;'>Telecharger le rapport PDF</a></p>";
                         document.getElementById("declarationForm").style.display = "none";
                     } else {
                         alert("Erreur");
@@ -2314,15 +2365,33 @@ def view_claim_details(claim_id: str):
     created_at = claim.get("created_at")
     date_display = format_french_datetime(created_at)
 
-    # --- Photos HTML ---
-    photos_html = ""
+    # --- Photos HTML (handles dict photos {data, content_type} AND data-URL strings) ---
     photos = claim.get("photos") or []
-    if photos:
-        photos_html = '<div class="section"><h3>📸 Photos</h3><div class="photos-grid">'
-        for i, photo_data in enumerate(photos):
-            if isinstance(photo_data, str) and photo_data.startswith("data:"):
-                photos_html += f'<img src="{photo_data}" alt="Photo {i+1}" class="claim-photo">'
-        photos_html += '</div></div>'
+    photo_count = len(photos)
+    photos_inner = ""
+    for i, photo_data in enumerate(photos):
+        src = None
+        if isinstance(photo_data, str) and photo_data.startswith("data:"):
+            src = photo_data
+        elif isinstance(photo_data, dict):
+            data = photo_data.get("data")
+            if isinstance(data, str) and data.startswith("data:"):
+                src = data
+            elif isinstance(data, str) and data:
+                ctype = photo_data.get("content_type", "image/jpeg")
+                src = f"data:{ctype};base64,{data}"
+        if src:
+            photos_inner += f'<img src="{src}" alt="Photo {i+1}" class="claim-photo">'
+
+    photos_html = f"""
+    <div class="section">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+            <h3 style="margin-bottom:0;">📸 Photos ({photo_count}/10)</h3>
+            <button class="action-btn add" onclick="openAddPhotos()">📥 Ajouter des photos</button>
+        </div>
+        <div class="photos-grid">{photos_inner or '<p style="color:#94a3b8;">Aucune photo pour le moment.</p>'}</div>
+    </div>
+    """
 
     # --- Analysis HTML (defensive: analysis may be a dict, a string, or None) ---
     analysis_html = ""
@@ -2682,6 +2751,61 @@ def view_claim_details(claim_id: str):
                 color: #cbd5e1;
                 line-height: 1.6;
             }}
+            .actions-bar {{
+                display: flex;
+                gap: 12px;
+                flex-wrap: wrap;
+                margin-top: 16px;
+            }}
+            .action-btn {{
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 18px;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
+                color: #fff;
+                text-decoration: none;
+                transition: transform 0.15s ease, box-shadow 0.15s ease;
+            }}
+            .action-btn:hover {{ transform: translateY(-2px); }}
+            .action-btn.pdf {{ background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%); }}
+            .action-btn.email {{ background: linear-gradient(135deg, #8b5cf6 0%, #ec4899 100%); }}
+            .action-btn.add {{ background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%); }}
+            .modal-overlay {{
+                display: none;
+                position: fixed;
+                inset: 0;
+                background: rgba(0,0,0,0.6);
+                z-index: 1000;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }}
+            .modal-overlay.open {{ display: flex; }}
+            .modal {{
+                background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+                border: 1px solid rgba(148,163,184,0.3);
+                border-radius: 14px;
+                padding: 28px;
+                max-width: 520px;
+                width: 100%;
+            }}
+            .modal h3 {{ margin-bottom: 16px; }}
+            .modal input[type="file"] {{
+                width: 100%;
+                padding: 12px;
+                background: rgba(15,23,42,0.6);
+                border: 2px dashed rgba(148,163,184,0.3);
+                border-radius: 8px;
+                color: #e2e8f0;
+            }}
+            .modal-actions {{ display:flex; gap:10px; margin-top:18px; }}
+            .modal-actions button {{ flex:1; }}
+            .btn-secondary {{ background: rgba(148,163,184,0.25); }}
         </style>
     </head>
     <body>
@@ -2689,6 +2813,11 @@ def view_claim_details(claim_id: str):
             <header>
                 <h1>🔐 Détail du Sinistre</h1>
                 <p style="color: #cbd5e1; font-size: 16px;">Référence: <strong>{claim_id}</strong></p>
+                <div class="actions-bar">
+                    <a class="action-btn pdf" href="/claim/{claim_id}/pdf">📥 Télécharger le PDF</a>
+                    <button class="action-btn email" onclick="sendPdfEmail()">📧 Envoyer le PDF</button>
+                    <button class="action-btn add" onclick="openAddPhotos()">📥 Ajouter des photos</button>
+                </div>
             </header>
 
             <div class="claim-info">
@@ -2773,8 +2902,80 @@ def view_claim_details(claim_id: str):
             {conclusion_html}
         </div>
 
+        <!-- Add Photos Modal -->
+        <div class="modal-overlay" id="addPhotosModal">
+            <div class="modal">
+                <h3 style="color:#60a5fa;">📥 Ajouter des photos</h3>
+                <p style="color:#cbd5e1;font-size:14px;margin-bottom:14px;">
+                    Sélectionnez une ou plusieurs photos (max 5 Mo chacune). Les doublons sont ignorés.
+                </p>
+                <input type="file" id="addPhotosInput" multiple accept="image/*">
+                <p id="addPhotosStatus" style="margin-top:12px;font-size:14px;color:#94a3b8;"></p>
+                <div class="modal-actions">
+                    <button class="action-btn add" id="addPhotosUploadBtn" onclick="uploadAddedPhotos()">Envoyer</button>
+                    <button class="action-btn btn-secondary" onclick="closeAddPhotos()">Annuler</button>
+                </div>
+            </div>
+        </div>
+
         <script>
         var CLAIM_ID = '{claim_id}';
+
+        function openAddPhotos() {{
+            document.getElementById("addPhotosModal").classList.add("open");
+        }}
+        function closeAddPhotos() {{
+            document.getElementById("addPhotosModal").classList.remove("open");
+            document.getElementById("addPhotosStatus").textContent = "";
+            document.getElementById("addPhotosInput").value = "";
+        }}
+
+        function uploadAddedPhotos() {{
+            var input = document.getElementById("addPhotosInput");
+            var status = document.getElementById("addPhotosStatus");
+            var btn = document.getElementById("addPhotosUploadBtn");
+            if (!input.files || input.files.length === 0) {{
+                status.textContent = "Veuillez sélectionner au moins une photo.";
+                return;
+            }}
+            var fd = new FormData();
+            for (var i = 0; i < input.files.length; i++) {{
+                if (input.files[i].size > 5 * 1024 * 1024) {{
+                    status.textContent = "Photo trop volumineuse (max 5 Mo): " + input.files[i].name;
+                    return;
+                }}
+                fd.append("photos", input.files[i]);
+            }}
+            btn.disabled = true;
+            status.textContent = "⏳ Envoi et analyse en cours...";
+            fetch("/claim/" + CLAIM_ID + "/add-photos", {{ method: "POST", body: fd }})
+                .then(function(r) {{ return r.json(); }})
+                .then(function(data) {{
+                    btn.disabled = false;
+                    if (data && typeof data.photo_count !== "undefined") {{
+                        status.innerHTML = "✅ " + (data.added || 0) + " photo(s) ajoutée(s). " +
+                            "Total: " + data.photo_count + "/10. Score fraude: " + data.fraud_score + "/100." +
+                            "<br>Rechargement...";
+                        setTimeout(function() {{ window.location.reload(); }}, 1400);
+                    }} else {{
+                        status.textContent = (data && data.detail) || "Erreur lors de l'ajout.";
+                    }}
+                }})
+                .catch(function() {{
+                    btn.disabled = false;
+                    status.textContent = "Erreur réseau.";
+                }});
+        }}
+
+        function sendPdfEmail() {{
+            if (!confirm("Envoyer le rapport PDF à l'assureur ?")) return;
+            fetch("/claim/" + CLAIM_ID + "/email-pdf", {{ method: "POST" }})
+                .then(function(r) {{ return r.json(); }})
+                .then(function(data) {{
+                    alert((data && data.message) || "Demande traitée.");
+                }})
+                .catch(function() {{ alert("Erreur réseau lors de l'envoi."); }});
+        }}
 
         function attestClaim() {{
             if (!confirm("Confirmez-vous attester de la véracité de cette déclaration ? Cette action est définitive.")) {{
@@ -3125,9 +3326,563 @@ async def attest_claim(claim_id: str, attestation_confirmed: bool = Form(True)):
     }
 
 
+def _load_claim(claim_id: str) -> dict | None:
+    """Resolve a claim from in-memory first, then MongoDB. Returns None if missing."""
+    claim = claims_db.get(claim_id)
+    if claim is not None:
+        return claim
+    try:
+        doc = claims_collection.find_one({"claim_id": claim_id}, {"_id": 0})
+        return doc
+    except Exception:
+        return None
+
+
+@app.get("/claim/{claim_id}/pdf")
+def download_claim_pdf(claim_id: str):
+    """Generate and return the professional claim PDF as a file download."""
+    claim = _load_claim(claim_id)
+    if not claim:
+        raise HTTPException(status_code=404, detail="Sinistre non trouvé")
+    pdf_bytes = generate_claim_pdf(claim_id, claim)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="sinistre_{claim_id}.pdf"'},
+    )
+
+
+@app.post("/claim/{claim_id}/email-pdf")
+def email_claim_pdf(claim_id: str):
+    """Generate the claim PDF and send it to the insurer email via SMTP.
+
+    Falls back to logging (and returns email_sent=False) when no SMTP service
+    is configured, so the endpoint never breaks the flow.
+    """
+    claim = _load_claim(claim_id)
+    if not claim:
+        raise HTTPException(status_code=404, detail="Sinistre non trouvé")
+
+    insurer_email = claim.get("insurer_email") or claim.get("user_email")
+    if not insurer_email:
+        raise HTTPException(status_code=400, detail="Aucune adresse email destinataire disponible.")
+
+    pdf_bytes = generate_claim_pdf(claim_id, claim)
+
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_from = os.getenv("SMTP_FROM", smtp_user or "noreply@assurancia.app")
+
+    if not (smtp_host and smtp_user and smtp_pass):
+        logger.info("📧 email-pdf requested for %s but no SMTP configured. "
+                    "Would send to %s (%d bytes).", claim_id, insurer_email, len(pdf_bytes))
+        return {
+            "email_sent": False,
+            "claim_id": claim_id,
+            "insurer_email": insurer_email,
+            "message": "Service email non configuré (SMTP_HOST/USER/PASS). PDF généré mais non envoyé.",
+            "pdf_size_bytes": len(pdf_bytes),
+        }
+
+    try:
+        import smtplib
+        from email.message import EmailMessage
+
+        msg = EmailMessage()
+        msg["Subject"] = f"AssuranceIA - Rapport de sinistre {claim_id}"
+        msg["From"] = smtp_from
+        msg["To"] = insurer_email
+        msg.set_content(
+            f"Bonjour,\n\nVeuillez trouver ci-joint le rapport de sinistre {claim_id}.\n\n"
+            f"Score de fraude: {claim.get('fraud_score', 'N/A')}/100\n\n"
+            "Cordialement,\nAssuranceIA"
+        )
+        msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf",
+                           filename=f"sinistre_{claim_id}.pdf")
+
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+
+        logger.info("📧 PDF emailed for %s to %s", claim_id, insurer_email)
+        return {
+            "email_sent": True,
+            "claim_id": claim_id,
+            "insurer_email": insurer_email,
+            "message": f"Rapport PDF envoyé à {insurer_email}.",
+        }
+    except Exception as e:
+        logger.error("❌ email-pdf SMTP send failed for %s: %r", claim_id, e)
+        return {
+            "email_sent": False,
+            "claim_id": claim_id,
+            "insurer_email": insurer_email,
+            "message": f"Échec de l'envoi email: {str(e)[:120]}",
+        }
+
+
+@app.post("/claim/{claim_id}/add-photos")
+async def add_photos_to_claim(claim_id: str, photos: list[UploadFile] = File(default=[])):
+    """Append new photos to an existing claim, dedup by MD5, re-run Vision + fraud.
+
+    - Validates each photo (size <= 5MB, supported media type).
+    - Skips duplicates already present in the claim (same MD5 hash).
+    - Re-runs Claude Vision analysis and recomputes the fraud score.
+    - Persists the updated photos / analysis / fraud_score to MongoDB + memory.
+    """
+    # Ensure claim is loaded into claims_db (so persistence + analysis work).
+    claim = claims_db.get(claim_id)
+    if claim is None:
+        doc = _load_claim(claim_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Sinistre non trouvé")
+        claims_db[claim_id] = doc
+        claim = doc
+
+    if not isinstance(claim.get("photos"), list):
+        claim["photos"] = []
+
+    existing_hashes = {
+        p.get("image_hash") for p in claim["photos"]
+        if isinstance(p, dict) and p.get("image_hash")
+    }
+
+    added = 0
+    skipped_duplicate = 0
+    skipped_invalid = 0
+
+    for upload in (photos or []):
+        try:
+            contents = await upload.read()
+        except Exception as e:
+            logger.warning("⚠️ add-photos could not read %r: %r", getattr(upload, "filename", "?"), e)
+            skipped_invalid += 1
+            continue
+        if not contents:
+            skipped_invalid += 1
+            continue
+        if len(contents) > MAX_PHOTO_BYTES:
+            logger.warning("⚠️ add-photos oversized %r (%d bytes)", upload.filename, len(contents))
+            skipped_invalid += 1
+            continue
+        media_type = normalize_media_type(upload.content_type)
+        if media_type is None:
+            skipped_invalid += 1
+            continue
+
+        image_hash = calculate_image_hash(contents)
+        if image_hash in existing_hashes:
+            skipped_duplicate += 1
+            continue
+        existing_hashes.add(image_hash)
+
+        try:
+            claim["photos"].append({
+                "filename": upload.filename,
+                "content_type": media_type,
+                "data": base64.b64encode(contents).decode("utf-8"),
+                "gps": extract_gps_from_exif(contents),
+                "exif_datetime": extract_exif_datetime(contents),
+                "image_hash": image_hash,
+            })
+            added += 1
+        except Exception as e:
+            logger.warning("⚠️ add-photos failed to process %r: %r", upload.filename, e)
+            skipped_invalid += 1
+
+    # Persist the new photos array immediately.
+    _persist_claim_field(claim_id, {"photos": claim["photos"]})
+
+    # Re-run Vision + recompute fraud score (best-effort, never raises).
+    analysis = None
+    try:
+        analysis = analyze_claim_photos_with_claude(claim_id, claim["photos"])
+    except Exception as e:
+        logger.error("❌ add-photos Vision analysis failed claim_id=%s: %r", claim_id, e)
+
+    public_analysis = build_public_analysis(analysis, claim)
+    claim["analysis"] = public_analysis
+
+    additional_factors = compute_additional_fraud_factors(claim)
+    fraud_score = calculate_fraud_score(claim, analysis, additional_factors)
+    claim["fraud_score"] = fraud_score
+    claim["fraud_factors"] = additional_factors
+
+    _persist_claim_field(claim_id, {
+        "photos": claim["photos"],
+        "analysis": public_analysis,
+        "fraud_score": fraud_score,
+        "fraud_factors": additional_factors,
+    })
+
+    logger.info("📸 add-photos claim=%s added=%d dup=%d invalid=%d total=%d fraud=%s",
+                claim_id, added, skipped_duplicate, skipped_invalid,
+                len(claim["photos"]), fraud_score)
+
+    return {
+        "claim_id": claim_id,
+        "added": added,
+        "skipped_duplicate": skipped_duplicate,
+        "skipped_invalid": skipped_invalid,
+        "photo_count": len(claim["photos"]),
+        "analysis": public_analysis,
+        "fraud_score": fraud_score,
+        "message": f"{added} photo(s) ajoutée(s). Total: {len(claim['photos'])} photo(s).",
+    }
+
+
 # ----------------------------------------------------------------------------
 # PDF generation (pure-Python, no external binary needed)
 # ----------------------------------------------------------------------------
+def _decode_photo_to_image_bytes(photo) -> tuple | None:
+    """Decode a stored photo into (PNG/JPEG bytes, ext) resized to max 800px width.
+
+    Accepts photo dicts ({"data": <base64 or data-url>, "content_type": ...}) or
+    bare data-URL strings. Returns None if the photo cannot be decoded.
+    Always re-encodes through Pillow so fpdf2 gets a clean, supported image.
+    """
+    try:
+        vinput = _photo_to_vision_input(photo)
+        if not vinput or not vinput.get("data"):
+            return None
+        raw = base64.b64decode(vinput["data"])
+        img = Image.open(BytesIO(raw))
+
+        # Convert modes that fpdf2 / JPEG can't handle directly.
+        if img.mode in ("RGBA", "P", "LA"):
+            img = img.convert("RGB")
+        elif img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+
+        # Resize to a max width of 800px (keeps PDF small + renders cleanly).
+        max_w = 800
+        if img.width > max_w:
+            ratio = max_w / float(img.width)
+            new_h = max(1, int(img.height * ratio))
+            img = img.resize((max_w, new_h))
+
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=82)
+        return out.getvalue(), "jpg"
+    except Exception as e:
+        logger.warning("⚠️ _decode_photo_to_image_bytes failed: %r", e)
+        return None
+
+
+def _build_qr_png(data: str) -> bytes | None:
+    """Build a QR-code PNG for `data` if the optional `qrcode` lib is installed.
+
+    Returns None when qrcode isn't available (no hard dependency added).
+    """
+    try:
+        import qrcode  # optional dependency
+        qr = qrcode.make(data)
+        buf = BytesIO()
+        qr.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def generate_claim_pdf(claim_id: str, claim_data: dict) -> bytes:
+    """Build a professional multi-page PDF report for a claim using fpdf2.
+
+    Includes: gradient-style header, claim reference, French-formatted date,
+    all form fields, attestation status, embedded photos (max 800px), Claude
+    Vision analysis, fraud score + assessment, conclusion, signature line,
+    page numbers and an optional QR code linking to claim details.
+
+    Never raises — on any error returns a minimal safe fallback PDF so the
+    download endpoint can't break the claim flow.
+    """
+    try:
+        return _generate_claim_pdf_impl(claim_id, claim_data or {})
+    except Exception as e:
+        logger.error("❌ generate_claim_pdf failed for %s: %r — returning fallback PDF", claim_id, e)
+        try:
+            fb = FPDF()
+            fb.add_page()
+            fb.set_font("Helvetica", "B", 16)
+            fb.cell(0, 12, "AssuranceIA - Rapport de Sinistre", ln=True)
+            fb.set_font("Helvetica", "", 11)
+            fb.cell(0, 8, f"Reference: {claim_id}", ln=True)
+            fb.multi_cell(0, 7, "Le rapport detaille n'a pas pu etre genere (erreur technique). "
+                                "Veuillez reessayer ou contacter le support.")
+            return bytes(fb.output())
+        except Exception:
+            # Absolute last resort: a tiny valid PDF.
+            return b"%PDF-1.4\n%%EOF\n"
+
+
+def _generate_claim_pdf_impl(claim_id: str, claim: dict) -> bytes:
+    """Internal implementation for generate_claim_pdf (may raise; caller guards)."""
+
+    APP_URL = os.getenv("APP_URL", "https://assurancia-api-2.onrender.com")
+
+    def s(text) -> str:
+        # fpdf2 core fonts are latin-1; strip unsupported chars (e.g. emojis) safely.
+        return str(text).encode("latin-1", "replace").decode("latin-1")
+
+    # Brand colors (blue -> purple gradient feel).
+    BLUE = (59, 130, 246)
+    PURPLE = (139, 92, 246)
+    DARK = (30, 41, 59)
+    GREY = (100, 116, 139)
+
+    class ClaimPDF(FPDF):
+        def header(self):
+            # Gradient-style header band: draw thin vertical strips blue->purple.
+            steps = 60
+            band_h = 30
+            for i in range(steps):
+                t = i / float(steps - 1)
+                r = int(BLUE[0] + (PURPLE[0] - BLUE[0]) * t)
+                g = int(BLUE[1] + (PURPLE[1] - BLUE[1]) * t)
+                b = int(BLUE[2] + (PURPLE[2] - BLUE[2]) * t)
+                self.set_fill_color(r, g, b)
+                x = i * (210.0 / steps)
+                self.rect(x, 0, (210.0 / steps) + 0.5, band_h, "F")
+            self.set_xy(10, 7)
+            self.set_text_color(255, 255, 255)
+            self.set_font("Helvetica", "B", 19)
+            self.cell(0, 9, s("AssuranceIA(TM) - Rapport de Sinistre"), ln=True)
+            self.set_xy(10, 18)
+            self.set_font("Helvetica", "", 10)
+            self.cell(0, 6, s(f"Reference: {claim.get('claim_id', claim_id)}"), ln=True)
+            self.set_text_color(*DARK)
+            self.set_y(38)
+
+        def footer(self):
+            self.set_y(-15)
+            self.set_font("Helvetica", "I", 8)
+            self.set_text_color(*GREY)
+            self.cell(0, 5, s("AssuranceIA(TM) - Document genere automatiquement - aide a la decision"),
+                      align="L")
+            self.cell(0, 5, s(f"Page {self.page_no()}/{{nb}}"), align="R")
+
+    pdf = ClaimPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.alias_nb_pages()
+    pdf.add_page()
+
+    def section(title: str):
+        if pdf.get_y() > 250:
+            pdf.add_page()
+        pdf.ln(2)
+        pdf.set_fill_color(238, 242, 255)
+        pdf.set_draw_color(*PURPLE)
+        pdf.set_line_width(0.3)
+        pdf.set_text_color(*PURPLE)
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.cell(0, 9, s(title), ln=True, fill=True, border="B")
+        pdf.set_text_color(*DARK)
+        pdf.set_font("Helvetica", "", 11)
+        pdf.ln(2)
+
+    def field(label: str, value):
+        y = pdf.get_y()
+        if y > 268:
+            pdf.add_page()
+            y = pdf.get_y()
+        pdf.set_xy(12, y)
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.set_text_color(71, 85, 105)
+        pdf.cell(48, 7, s(label), border=0)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_text_color(*DARK)
+        pdf.set_xy(60, y)
+        pdf.multi_cell(138, 7, s(value if value not in (None, "") else "-"))
+
+    # ---- Date / reference summary -----------------------------------------
+    created_at = claim.get("created_at")
+    date_fr = format_french_datetime(created_at)
+
+    section("Informations sur la declaration")
+    field("Date de declaration", date_fr)
+    field("Reference", claim.get("claim_id", claim_id))
+    field("Statut", claim.get("status", "open"))
+
+    # ---- Form fields -------------------------------------------------------
+    section("Informations du declarant")
+    field("Email", claim.get("user_email"))
+    field("Prenom", claim.get("firstname"))
+    field("Nom", claim.get("lastname"))
+    field("Telephone", claim.get("phone"))
+    field("Type de degat", claim.get("damage_type"))
+    field("Adresse", claim.get("address"))
+    field("Description", claim.get("description"))
+
+    # ---- Attestation -------------------------------------------------------
+    section("Attestation sur l'honneur")
+    if claim.get("attestation_confirmed"):
+        ts = claim.get("attestation_timestamp")
+        field("Statut", "Atteste")
+        if ts:
+            field("Atteste le", format_french_datetime(ts))
+    else:
+        field("Statut", "Non atteste")
+
+    # ---- Vision analysis ---------------------------------------------------
+    analysis = claim.get("analysis")
+    section("Analyse Claude Vision")
+    if isinstance(analysis, dict) and analysis:
+        summary = analysis.get("summary") or analysis.get("visible_damage")
+        if summary:
+            field("Resume", summary)
+        field("Type detecte", analysis.get("damage_type") or analysis.get("detected_damage_type"))
+        field("Gravite", analysis.get("severity") or analysis.get("damage_severity"))
+        cost = analysis.get("estimated_cost") or analysis.get("estimated_cost_eur")
+        if cost not in (None, "", 0, "N/A"):
+            cost_disp = str(cost) if str(cost).strip().startswith("€") or "-" in str(cost) else f"{cost} EUR"
+            field("Cout estime", cost_disp)
+        recs = analysis.get("recommendations")
+        if isinstance(recs, list) and recs:
+            field("Recommandations", " | ".join(str(r) for r in recs))
+        elif analysis.get("recommendation"):
+            field("Recommandation", analysis.get("recommendation"))
+        indicators = analysis.get("fraud_indicators") or []
+        if indicators:
+            field("Indices fraude", "; ".join(str(i) for i in indicators))
+        if analysis.get("analyzed_at"):
+            field("Analyse le", format_french_datetime(analysis.get("analyzed_at")))
+    else:
+        pdf.set_font("Helvetica", "I", 10)
+        pdf.multi_cell(0, 7, s("Analyse non encore disponible."))
+        pdf.set_font("Helvetica", "", 11)
+
+    # ---- Fraud score + assessment -----------------------------------------
+    fraud_score = claim.get("fraud_score", 0)
+    try:
+        fraud_score = float(fraud_score)
+    except (TypeError, ValueError):
+        fraud_score = 0.0
+    fs_disp = int(fraud_score) if fraud_score == int(fraud_score) else fraud_score
+
+    if fraud_score <= 20:
+        risk_label, risk_rgb = "FAIBLE", (34, 197, 94)
+        assessment = ("Les elements transmis sont coherents et ne presentent pas d'indice de fraude "
+                      "significatif. Le dossier peut suivre le circuit d'indemnisation standard.")
+    elif fraud_score <= 50:
+        risk_label, risk_rgb = "MODERE", (234, 179, 8)
+        assessment = ("Certains elements appellent a la vigilance et meritent une verification "
+                      "complementaire avant toute decision d'indemnisation.")
+    else:
+        risk_label, risk_rgb = "ELEVE", (239, 68, 68)
+        assessment = ("Le dossier presente plusieurs indices de fraude potentielle necessitant un "
+                      "traitement renforce. Aucune indemnisation ne devrait etre engagee en l'etat.")
+
+    section("Score de fraude")
+    y = pdf.get_y()
+    pdf.set_xy(12, y)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_text_color(71, 85, 105)
+    pdf.cell(48, 8, s("Niveau de risque"), border=0)
+    pdf.set_fill_color(*risk_rgb)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(45, 8, s(f"{risk_label}  ({fs_disp}/100)"), align="C", fill=True, ln=True)
+    pdf.set_text_color(*DARK)
+    pdf.ln(2)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_x(12)
+    pdf.multi_cell(186, 6, s(assessment))
+
+    # ---- Photos ------------------------------------------------------------
+    photos = claim.get("photos") or []
+    section(f"Photos du sinistre ({len(photos)})")
+    if not photos:
+        pdf.set_font("Helvetica", "I", 10)
+        pdf.multi_cell(0, 7, s("Aucune photo fournie."))
+    else:
+        for idx, photo in enumerate(photos, 1):
+            decoded = _decode_photo_to_image_bytes(photo)
+            fname = photo.get("filename", f"photo_{idx}") if isinstance(photo, dict) else f"photo_{idx}"
+
+            # Estimate space; new page if not enough room for a photo block.
+            if pdf.get_y() > 200:
+                pdf.add_page()
+
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.set_text_color(*DARK)
+            pdf.cell(0, 6, s(f"Photo {idx}: {fname}"), ln=True)
+
+            if isinstance(photo, dict) and photo.get("gps"):
+                g = photo["gps"]
+                try:
+                    pdf.set_font("Helvetica", "", 8)
+                    pdf.set_text_color(*GREY)
+                    pdf.cell(0, 4, s(f"GPS: {g['latitude']:.5f}, {g['longitude']:.5f}"), ln=True)
+                    pdf.set_text_color(*DARK)
+                except Exception:
+                    pass
+
+            if decoded:
+                img_bytes, ext = decoded
+                try:
+                    pdf.image(BytesIO(img_bytes), x=15, w=150)
+                except Exception as e:
+                    logger.warning("⚠️ pdf.image failed for photo %d: %r", idx, e)
+                    pdf.set_font("Helvetica", "I", 9)
+                    pdf.set_text_color(150, 0, 0)
+                    pdf.cell(0, 5, s("[Photo non affichable]"), ln=True)
+                    pdf.set_text_color(*DARK)
+            else:
+                pdf.set_font("Helvetica", "I", 9)
+                pdf.set_text_color(150, 0, 0)
+                pdf.cell(0, 5, s("[Photo non affichable]"), ln=True)
+                pdf.set_text_color(*DARK)
+            pdf.ln(4)
+
+    # ---- Conclusion --------------------------------------------------------
+    section("Conclusion")
+    pdf.set_font("Helvetica", "", 10)
+    concl = (f"Le present rapport synthetise la declaration de sinistre {claim.get('claim_id', claim_id)} "
+             f"de type \"{claim.get('damage_type', 'non determine')}\". "
+             f"Le niveau de risque de fraude evalue est {risk_label} ({fs_disp}/100). {assessment} "
+             "Cette synthese est une aide a la decision generee automatiquement par AssuranceIA(TM) "
+             "et ne se substitue pas a l'appreciation d'un expert mandate.")
+    pdf.set_x(12)
+    pdf.multi_cell(186, 6, s(concl))
+    pdf.ln(6)
+
+    # ---- Optional QR code linking to claim details -------------------------
+    qr_png = _build_qr_png(f"{APP_URL}/claim/{claim.get('claim_id', claim_id)}")
+    if qr_png:
+        try:
+            if pdf.get_y() > 240:
+                pdf.add_page()
+            qy = pdf.get_y()
+            pdf.image(BytesIO(qr_png), x=12, y=qy, w=28)
+            pdf.set_xy(44, qy + 6)
+            pdf.set_font("Helvetica", "", 9)
+            pdf.set_text_color(*GREY)
+            pdf.multi_cell(150, 5, s("Scannez pour acceder au detail du dossier en ligne."))
+            pdf.set_text_color(*DARK)
+            pdf.set_y(qy + 30)
+        except Exception:
+            pass
+
+    # ---- Signature line ----------------------------------------------------
+    if pdf.get_y() > 255:
+        pdf.add_page()
+    pdf.ln(4)
+    pdf.set_draw_color(*GREY)
+    pdf.set_line_width(0.2)
+    y = pdf.get_y()
+    pdf.line(12, y, 100, y)
+    pdf.set_xy(12, y + 1)
+    pdf.set_font("Helvetica", "I", 9)
+    pdf.set_text_color(*GREY)
+    pdf.cell(0, 6, s(f"Declaration certifiee conforme le {format_french_datetime(datetime.now().isoformat())}"),
+             ln=True)
+    pdf.set_text_color(*DARK)
+
+    out = pdf.output()
+    return bytes(out)
+
+
 def build_claim_pdf(claim: dict) -> bytes:
     """Build a simple one-page PDF report using fpdf2."""
     from fpdf import FPDF
