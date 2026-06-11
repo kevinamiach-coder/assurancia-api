@@ -40,7 +40,9 @@ logging.basicConfig(
 logger = logging.getLogger("assurancia")
 
 # MongoDB Connection
-MONGODB_URI = os.getenv("MONGODB_URI") or "mongodb+srv://artisanpatrimoinefrancais_db_user:REMOVED@cluster0.ac2vlvx.mongodb.net/?appName=Cluster0"
+MONGODB_URI = os.getenv("MONGODB_URI")
+if not MONGODB_URI:
+    raise RuntimeError("MONGODB_URI environment variable is required. Set it in .env or on your deployment platform.")
 
 # serverSelectionTimeoutMS keeps the app responsive if Mongo is unreachable
 # instead of hanging for ~30s on every request.
