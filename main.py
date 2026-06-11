@@ -1466,6 +1466,14 @@ async def dashboard(request: Request, insurer_id: str = Depends(verify_insurer_t
     return Response(content=html, media_type="text/html")
 
 
+# ========== RATE LIMIT TEST ENDPOINT ==========
+
+@app.get("/ratelimit-test")
+@limiter.limit("5/minute")
+async def ratelimit_test(request: Request):
+    return {"ok": True}
+
+
 # ========== TOKEN-BASED ROUTES (for sharing with clients/insurers) ==========
 
 @app.get("/")
