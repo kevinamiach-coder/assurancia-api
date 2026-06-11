@@ -1276,28 +1276,182 @@ def create_declaration_link(request: DeclarationLinkRequest):
     }
 
 
-# ========== DASHBOARD ROUTE ==========
+# ========== LOGIN & DASHBOARD ROUTES ==========
+
+@app.get("/login")
+def login_page(token: str = ""):
+    """Login page that accepts a JWT token and stores it in localStorage.
+
+    Usage: /login?token=<JWT_TOKEN>
+    This page stores the token in localStorage and redirects to /dashboard.
+    """
+    if not token:
+        return Response(content="""
+        <!DOCTYPE html>
+        <html lang="fr">
+        <head>
+            <meta charset="UTF-8">
+            <title>Connexion - AssuranceIA™</title>
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    min-height: 100vh;
+                    margin: 0;
+                    color: #e2e8f0;
+                }
+                .container {
+                    background: rgba(30, 41, 59, 0.9);
+                    border: 1px solid rgba(148, 163, 184, 0.2);
+                    border-radius: 12px;
+                    padding: 40px;
+                    max-width: 400px;
+                    text-align: center;
+                }
+                h1 {
+                    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                    -webkit-background-clip: text;
+                    -webkit-text-fill-color: transparent;
+                    background-clip: text;
+                    margin-bottom: 20px;
+                }
+                input {
+                    width: 100%;
+                    padding: 12px;
+                    margin: 10px 0;
+                    border: 1px solid rgba(148, 163, 184, 0.3);
+                    border-radius: 6px;
+                    background: rgba(51, 65, 85, 0.5);
+                    color: #e2e8f0;
+                    font-size: 14px;
+                }
+                button {
+                    width: 100%;
+                    padding: 12px;
+                    margin-top: 20px;
+                    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                    border: none;
+                    border-radius: 6px;
+                    color: white;
+                    font-weight: 600;
+                    cursor: pointer;
+                }
+                button:hover {
+                    opacity: 0.9;
+                }
+                code {
+                    background: rgba(51, 65, 85, 0.8);
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    color: #60a5fa;
+                    display: block;
+                    margin-top: 20px;
+                    word-break: break-all;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🔐 AssuranceIA™</h1>
+                <p>Connectez-vous avec votre JWT token</p>
+                <input type="password" id="tokenInput" placeholder="Coller votre JWT token ici...">
+                <button onclick="login()">Se connecter</button>
+                <code id="hint" style="display:none;">Token requis</code>
+            </div>
+            <script>
+                function login() {
+                    const token = document.getElementById('tokenInput').value.trim();
+                    if (!token) {
+                        document.getElementById('hint').style.display = 'block';
+                        return;
+                    }
+                    window.location.href = '/login?token=' + encodeURIComponent(token);
+                }
+                document.getElementById('tokenInput').onkeypress = (e) => {
+                    if (e.key === 'Enter') login();
+                };
+            </script>
+        </body>
+        </html>
+        """, media_type="text/html")
+
+    # Token provided: validate and store
+    try:
+        payload = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+        insurer_id = payload.get("insurer_id")
+        if not insurer_id:
+            raise ValueError("No insurer_id in token")
+    except:
+        return Response(content="""
+        <!DOCTYPE html>
+        <html lang="fr">
+        <head>
+            <meta charset="UTF-8">
+            <title>Erreur - AssuranceIA™</title>
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    min-height: 100vh;
+                    margin: 0;
+                    color: #e2e8f0;
+                }
+                .container {
+                    background: rgba(239, 68, 68, 0.1);
+                    border: 1px solid rgba(239, 68, 68, 0.3);
+                    border-radius: 12px;
+                    padding: 40px;
+                    max-width: 400px;
+                    text-align: center;
+                }
+                h1 { color: #fca5a5; }
+                a { color: #60a5fa; text-decoration: none; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>❌ Token invalide</h1>
+                <p>Le token JWT n'est pas valide ou a expiré.</p>
+                <a href="/login">← Retour à la connexion</a>
+            </div>
+        </body>
+        </html>
+        """, media_type="text/html")
+
+    # Valid token: store in localStorage and redirect to dashboard
+    return Response(content=f"""
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <title>Redirection...</title>
+    </head>
+    <body>
+        <script>
+            localStorage.setItem('assurance_jwt', '{token}');
+            window.location.href = '/dashboard';
+        </script>
+        <p>Redirection vers le dashboard...</p>
+    </body>
+    </html>
+    """, media_type="text/html")
+
 
 @app.get("/dashboard")
-@limiter.limit("5/minute")
-async def dashboard(request: Request, insurer_id: str = Depends(verify_insurer_token)):
-    """Dashboard to view all claims from MongoDB (falls back to in-memory)."""
-    try:
-        claims_list = list(claims_collection.find({}, {"_id": 0}).sort("created_at", -1))
-    except Exception as e:
-        logger.warning("⚠️  Dashboard could not read from MongoDB: %r — using in-memory fallback.", e)
-        claims_list = []
+def dashboard(request: Request):
+    """Dashboard page that reads JWT token from localStorage.
 
-    # Fallback / merge: if Mongo returned nothing but we have in-memory claims,
-    # show those so the dashboard is never wrongly empty.
-    if not claims_list and claims_db:
-        claims_list = sorted(
-            [{k: v for k, v in c.items() if k != "_id"} for c in claims_db.values()],
-            key=lambda c: c.get("created_at", ""),
-            reverse=True,
-        )
-
-    html = f"""
+    The page checks for a token in localStorage and displays claims.
+    If no token, it redirects to /login.
+    """
+    html = """
     <!DOCTYPE html>
     <html lang="fr">
     <head>
@@ -1305,165 +1459,261 @@ async def dashboard(request: Request, insurer_id: str = Depends(verify_insurer_t
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>AssuranceIA™ Dashboard</title>
         <style>
-            * {{
+            * {
                 margin: 0;
                 padding: 0;
                 box-sizing: border-box;
-            }}
-            body {{
+            }
+            body {
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                 background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
                 color: #e2e8f0;
                 padding: 40px 20px;
                 min-height: 100vh;
-            }}
-            .container {{
+            }
+            .container {
                 max-width: 1400px;
                 margin: 0 auto;
-            }}
-            header {{
+            }
+            header {
                 margin-bottom: 40px;
-            }}
-            h1 {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            h1 {
                 font-size: 36px;
                 background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
-                margin-bottom: 10px;
-            }}
-            p {{
+            }
+            .logout-btn {
+                background: rgba(239, 68, 68, 0.2);
+                border: 1px solid rgba(239, 68, 68, 0.5);
+                color: #fca5a5;
+                padding: 8px 16px;
+                border-radius: 6px;
+                cursor: pointer;
+                font-weight: 600;
+            }
+            .logout-btn:hover {
+                background: rgba(239, 68, 68, 0.3);
+            }
+            p {
                 color: #cbd5e1;
                 font-size: 16px;
-            }}
-            .table-container {{
+            }
+            .table-container {
                 background: linear-gradient(135deg, rgba(30, 41, 59, 0.9) 0%, rgba(51, 65, 85, 0.9) 100%);
                 border: 1px solid rgba(148, 163, 184, 0.2);
                 border-radius: 12px;
                 overflow: hidden;
                 backdrop-filter: blur(10px);
-            }}
-            table {{
+            }
+            table {
                 width: 100%;
                 border-collapse: collapse;
-            }}
-            th {{
+            }
+            th {
                 background: rgba(59, 130, 246, 0.1);
                 padding: 16px;
                 text-align: left;
                 font-weight: 600;
                 border-bottom: 1px solid rgba(148, 163, 184, 0.2);
                 color: #60a5fa;
-            }}
-            td {{
+            }
+            td {
                 padding: 16px;
                 border-bottom: 1px solid rgba(148, 163, 184, 0.1);
-            }}
-            tr:hover {{
+            }
+            tr:hover {
                 background: rgba(59, 130, 246, 0.05);
-            }}
-            .reference {{
+            }
+            .reference {
                 color: #60a5fa;
                 font-weight: 600;
-            }}
-            .status {{
+                cursor: pointer;
+                text-decoration: none;
+            }
+            .reference:hover {
+                text-decoration: underline;
+            }
+            .status {
                 display: inline-block;
                 padding: 4px 12px;
                 border-radius: 6px;
                 font-size: 12px;
                 font-weight: 600;
-            }}
-            .status.low {{
+            }
+            .status.low {
                 background: rgba(34, 197, 94, 0.2);
                 color: #86efac;
-            }}
-            .status.medium {{
+            }
+            .status.medium {
                 background: rgba(248, 113, 113, 0.2);
                 color: #fca5a5;
-            }}
-            .status.high {{
+            }
+            .status.high {
                 background: rgba(239, 68, 68, 0.2);
                 color: #fca5a5;
-            }}
-            .empty {{
+            }
+            .empty {
                 text-align: center;
                 padding: 60px 20px;
                 color: #94a3b8;
-            }}
+            }
+            .loading {
+                text-align: center;
+                padding: 60px 20px;
+                color: #60a5fa;
+            }
+            .error {
+                background: rgba(239, 68, 68, 0.1);
+                border: 1px solid rgba(239, 68, 68, 0.3);
+                color: #fca5a5;
+                padding: 20px;
+                border-radius: 6px;
+                text-align: center;
+                margin: 20px 0;
+            }
         </style>
     </head>
     <body>
         <div class="container">
             <header>
-                <h1>🔐 AssuranceIA™ Dashboard</h1>
-                <p>Tous les sinistres déclarés et analysés</p>
+                <div>
+                    <h1>🔐 AssuranceIA™ Dashboard</h1>
+                    <p>Tous les sinistres déclarés et analysés</p>
+                </div>
+                <button class="logout-btn" onclick="logout()">📤 Déconnexion</button>
             </header>
 
-            <div class="table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Référence</th>
-                            <th>Email</th>
-                            <th>Prénom</th>
-                            <th>Nom</th>
-                            <th>Téléphone</th>
-                            <th>Type</th>
-                            <th>Adresse</th>
-                            <th>Fraude</th>
-                            <th>Date</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-    """
-
-    if claims_list:
-        for claim in claims_list:
-            ref = claim.get("claim_id", "N/A")
-            email = claim.get("user_email", "N/A")
-            firstname = claim.get("firstname", "N/A")
-            lastname = claim.get("lastname", "N/A")
-            phone = claim.get("phone", "N/A")
-            damage = claim.get("damage_type", "N/A")
-            address = claim.get("address", "N/A")
-            fraud_score = claim.get("fraud_score", 0)
-            created = claim.get("created_at", "N/A")[:10]
-
-            # Fraud status badge (bands: 0-20 green, 21-50 orange, 51+ red)
-            if fraud_score <= 20:
-                status = '<span class="status low">✓ Fiable</span>'
-            elif fraud_score <= 50:
-                status = '<span class="status medium">⚠ Attention</span>'
-            else:
-                status = '<span class="status high">🚨 Suspect</span>'
-
-            html += f"""
-                        <tr>
-                            <td class="reference"><a href="/claim/{ref}" style="color: #60a5fa; text-decoration: none; cursor: pointer; font-weight: 600;">{ref}</a></td>
-                            <td>{email}</td>
-                            <td>{firstname}</td>
-                            <td>{lastname}</td>
-                            <td>{phone}</td>
-                            <td>{damage}</td>
-                            <td>{address[:40]}...</td>
-                            <td>{status} ({fraud_score})</td>
-                            <td>{created}</td>
-                        </tr>
-            """
-    else:
-        html += """
-                        <tr>
-                            <td colspan="6" class="empty">
-                                <p>Aucun sinistre déclaré pour le moment</p>
-                            </td>
-                        </tr>
-        """
-
-    html += """
-                    </tbody>
-                </table>
+            <div class="table-container" id="tableContainer">
+                <div class="loading">⏳ Chargement des sinistres...</div>
             </div>
         </div>
+
+        <script>
+            async function loadDashboard() {
+                const token = localStorage.getItem('assurance_jwt');
+                if (!token) {
+                    window.location.href = '/login';
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/dashboard', {
+                        headers: {
+                            'Authorization': `Bearer ${token}`
+                        }
+                    });
+
+                    if (!response.ok) {
+                        if (response.status === 401 || response.status === 403) {
+                            localStorage.removeItem('assurance_jwt');
+                            window.location.href = '/login';
+                            return;
+                        }
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    const data = await response.json();
+                    displayClaims(data.claims);
+                } catch (error) {
+                    document.getElementById('tableContainer').innerHTML = `
+                        <div class="error">
+                            ❌ Erreur de chargement: ${error.message}
+                            <br><a href="/login" style="color: #60a5fa;">← Retour à la connexion</a>
+                        </div>
+                    `;
+                }
+            }
+
+            function displayClaims(claims) {
+                if (!claims || claims.length === 0) {
+                    document.getElementById('tableContainer').innerHTML = `
+                        <div class="empty">
+                            <p>Aucun sinistre déclaré pour le moment</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                let html = `
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Référence</th>
+                                <th>Email</th>
+                                <th>Prénom</th>
+                                <th>Nom</th>
+                                <th>Téléphone</th>
+                                <th>Type</th>
+                                <th>Adresse</th>
+                                <th>Fraude</th>
+                                <th>Date</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+
+                claims.forEach(claim => {
+                    const ref = claim.claim_id || 'N/A';
+                    const email = claim.user_email || 'N/A';
+                    const firstname = claim.firstname || 'N/A';
+                    const lastname = claim.lastname || 'N/A';
+                    const phone = claim.phone || 'N/A';
+                    const damage = claim.damage_type || 'N/A';
+                    const address = (claim.address || 'N/A').substring(0, 40);
+                    const fraud_score = claim.fraud_score || 0;
+                    const created = (claim.created_at || 'N/A').substring(0, 10);
+
+                    let statusHtml;
+                    if (fraud_score <= 20) {
+                        statusHtml = '<span class="status low">✓ Fiable</span>';
+                    } else if (fraud_score <= 50) {
+                        statusHtml = '<span class="status medium">⚠ Attention</span>';
+                    } else {
+                        statusHtml = '<span class="status high">🚨 Suspect</span>';
+                    }
+
+                    html += `
+                        <tr>
+                            <td><a class="reference" onclick="viewClaim('${ref}')" title="Voir le détail">${ref}</a></td>
+                            <td>${email}</td>
+                            <td>${firstname}</td>
+                            <td>${lastname}</td>
+                            <td>${phone}</td>
+                            <td>${damage}</td>
+                            <td>${address}...</td>
+                            <td>${statusHtml} (${fraud_score})</td>
+                            <td>${created}</td>
+                        </tr>
+                    `;
+                });
+
+                html += `
+                        </tbody>
+                    </table>
+                `;
+
+                document.getElementById('tableContainer').innerHTML = html;
+            }
+
+            function viewClaim(claimId) {
+                const token = localStorage.getItem('assurance_jwt');
+                window.location.href = `/claim/${claimId}?token=${encodeURIComponent(token)}`;
+            }
+
+            function logout() {
+                localStorage.removeItem('assurance_jwt');
+                window.location.href = '/login';
+            }
+
+            // Load dashboard on page load
+            window.onload = loadDashboard;
+        </script>
     </body>
     </html>
     """
