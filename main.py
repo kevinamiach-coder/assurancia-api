@@ -29,8 +29,13 @@ from starlette.requests import Request
 
 app = FastAPI(title="AssuranceIA API", version="2.0")
 
-# Rate Limiting
-limiter = Limiter(key_func=get_remote_address)
+# Rate Limiting - use x-forwarded-for for proper client IP behind proxy
+def get_client_ip(request: Request) -> str:
+    """Get real client IP, accounting for reverse proxies (Render, CloudFlare, etc)"""
+    fwd = request.headers.get("x-forwarded-for")
+    return fwd.split(",")[0].strip() if fwd else get_remote_address(request)
+
+limiter = Limiter(key_func=get_client_ip)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
