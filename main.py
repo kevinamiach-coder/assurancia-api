@@ -2398,6 +2398,50 @@ def get_claim_json(claim_id: str, insurer_id: str = Depends(verify_insurer_token
     return serializable_claim
 
 
+@app.get("/api/dashboard")
+@limiter.limit("10/minute")
+async def get_dashboard_json(request: Request, insurer_id: str = Depends(verify_insurer_token)):
+    """API endpoint: return all claims as JSON for programmatic access.
+
+    Returns a list of all claims sorted by creation date (newest first).
+    Requires JWT authentication.
+    """
+    try:
+        claims_list = list(claims_collection.find({}, {"_id": 0}).sort("created_at", -1))
+    except Exception as e:
+        logger.warning("⚠️  Dashboard could not read from MongoDB: %r — using in-memory fallback.", e)
+        claims_list = []
+
+    # Fallback / merge: if Mongo returned nothing but we have in-memory claims
+    if not claims_list and claims_db:
+        claims_list = sorted(
+            [{k: v for k, v in c.items() if k != "_id"} for c in claims_db.values()],
+            key=lambda c: c.get("created_at", ""),
+            reverse=True,
+        )
+
+    # Make all values JSON-serializable
+    serializable_claims = []
+    for claim in claims_list:
+        serializable_claim = {}
+        for key, value in claim.items():
+            if key == "_id":
+                continue
+            if isinstance(value, bytes):
+                serializable_claim[key] = "[binary data]"
+            elif isinstance(value, (dict, list, str, int, float, bool, type(None))):
+                serializable_claim[key] = value
+            else:
+                serializable_claim[key] = str(value)
+        serializable_claims.append(serializable_claim)
+
+    return {
+        "insurer_id": insurer_id,
+        "total_claims": len(serializable_claims),
+        "claims": serializable_claims
+    }
+
+
 def _load_claim_by_token(unique_token: str) -> tuple:
     """Resolve a claim from its unique_token (client authorization token).
 
