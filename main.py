@@ -22,7 +22,14 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends
 import jwt
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
 app = FastAPI(title="AssuranceIA API", version="2.0")
+
+# Rate Limiting
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
 
 # JWT Security
 security = HTTPBearer()
@@ -1180,7 +1187,8 @@ async def upload_photo(claim_id: str, file: UploadFile = File(...)):
 
 
 @app.post("/claims/{claim_id}/analyze")
-def analyze_claim(claim_id: str):
+@limiter.limit("10/minute")
+def analyze_claim(claim_id: str, request):
     """Analyze a claim's first photo using Claude Vision."""
     if claim_id not in claims_db:
         raise HTTPException(status_code=404, detail="Claim not found")
@@ -3168,7 +3176,8 @@ def send_claim_links(claim_id: str):
 
 
 @app.post("/declare/{token}/submit")
-async def submit_declaration(
+@limiter.limit("5/minute")
+async def submit_declaration(request,
     token: str,
     user_email: str = Form(""),
     firstname: str = Form(""),
