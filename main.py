@@ -22,14 +22,17 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends
 import jwt
 
-from slowapi import Limiter
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from starlette.requests import Request
 
 app = FastAPI(title="AssuranceIA API", version="2.0")
 
 # Rate Limiting
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # JWT Security
 security = HTTPBearer()
@@ -1188,7 +1191,7 @@ async def upload_photo(claim_id: str, file: UploadFile = File(...)):
 
 @app.post("/claims/{claim_id}/analyze")
 @limiter.limit("10/minute")
-def analyze_claim(claim_id: str, request):
+def analyze_claim(request: Request, claim_id: str):
     """Analyze a claim's first photo using Claude Vision."""
     if claim_id not in claims_db:
         raise HTTPException(status_code=404, detail="Claim not found")
@@ -1271,7 +1274,8 @@ def create_declaration_link(request: DeclarationLinkRequest):
 # ========== DASHBOARD ROUTE ==========
 
 @app.get("/dashboard")
-async def dashboard(insurer_id: str = Depends(verify_insurer_token)):
+@limiter.limit("5/minute")
+async def dashboard(request: Request, insurer_id: str = Depends(verify_insurer_token)):
     """Dashboard to view all claims from MongoDB (falls back to in-memory)."""
     try:
         claims_list = list(claims_collection.find({}, {"_id": 0}).sort("created_at", -1))
@@ -3177,7 +3181,7 @@ def send_claim_links(claim_id: str):
 
 @app.post("/declare/{token}/submit")
 @limiter.limit("5/minute")
-async def submit_declaration(request,
+async def submit_declaration(request: Request,
     token: str,
     user_email: str = Form(""),
     firstname: str = Form(""),
