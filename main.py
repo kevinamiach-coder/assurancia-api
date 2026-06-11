@@ -2371,6 +2371,33 @@ def view_claim_details(claim_id: str, insurer_id: str = Depends(verify_insurer_t
     return _render_claim_details(claim_id, claim, client_view=False)
 
 
+@app.get("/api/claim/{claim_id}")
+def get_claim_json(claim_id: str, insurer_id: str = Depends(verify_insurer_token)):
+    """API endpoint: return claim details as JSON for programmatic access.
+
+    This endpoint returns the raw claim data as JSON (not HTML).
+    Requires JWT authentication.
+    """
+    claim = _load_claim(claim_id)
+    if not claim:
+        raise HTTPException(status_code=404, detail="Sinistre non trouvé")
+
+    # Return all claim data as JSON
+    # Remove any non-serializable fields (like binary photo data if stored as bytes)
+    serializable_claim = {}
+    for key, value in claim.items():
+        if key == "_id":  # MongoDB internal ID, skip it
+            continue
+        if isinstance(value, bytes):  # Skip binary data
+            serializable_claim[key] = "[binary data]"
+        elif isinstance(value, dict) or isinstance(value, list) or isinstance(value, str) or isinstance(value, (int, float, bool)) or value is None:
+            serializable_claim[key] = value
+        else:
+            serializable_claim[key] = str(value)
+
+    return serializable_claim
+
+
 def _load_claim_by_token(unique_token: str) -> tuple:
     """Resolve a claim from its unique_token (client authorization token).
 
