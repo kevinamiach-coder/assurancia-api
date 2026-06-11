@@ -1473,10 +1473,22 @@ async def dashboard(request: Request, insurer_id: str = Depends(verify_insurer_t
 
 # ========== RATE LIMIT TEST ENDPOINT ==========
 
+def ratelimit_test_key(request: Request) -> str:
+    """Stable key for testing rate limiting behind a proxy that rotates IPs.
+
+    Prefers the client_id query param so the 'client' is controllable and
+    immune to per-request IP rotation. Falls back to client IP.
+    """
+    client_id = request.query_params.get("client_id")
+    if client_id:
+        return f"client_id:{client_id}"
+    return get_client_ip(request)
+
+
 @app.get("/ratelimit-test")
-@limiter.limit("5/minute")
-async def ratelimit_test(request: Request):
-    return {"ok": True}
+@limiter.limit("5/minute", key_func=ratelimit_test_key)
+async def ratelimit_test(request: Request, client_id: str = "default"):
+    return {"ok": True, "client_id": client_id}
 
 
 # ========== TOKEN-BASED ROUTES (for sharing with clients/insurers) ==========
