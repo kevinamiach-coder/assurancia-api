@@ -2598,13 +2598,45 @@ def get_declaration_form(token: str):
 
 
 @app.get("/claim/{claim_id}")
-def view_claim_details(claim_id: str, insurer_id: str = Depends(verify_insurer_token)):
+def view_claim_details(claim_id: str, token: str = "", request: Request = None):
     """INTERNAL (insurer/expert) view of a claim — full data incl. fraud score.
+
+    Accepts JWT either via:
+    1. Authorization header (classic JWT auth)
+    2. Query param ?token=<JWT> (for dashboard links)
 
     Looks up by claim_id (used from the dashboard). Client-facing access goes
     through /my-claim/{unique_token} which renders the same page in client mode
     (fraud score + expert conclusion hidden).
     """
+    # Validate JWT from either header or query param
+    insurer_id = None
+
+    if token:
+        # Token from query param
+        try:
+            payload = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+            insurer_id = payload.get("insurer_id")
+        except:
+            raise HTTPException(status_code=401, detail="Token invalide")
+    else:
+        # Try to get token from Authorization header
+        if not request:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            try:
+                payload = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+                insurer_id = payload.get("insurer_id")
+            except:
+                raise HTTPException(status_code=401, detail="Token invalide")
+        else:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+
+    if not insurer_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no insurer_id")
+
     # Try MongoDB first, then fall back to in-memory
     claim = None
     try:
