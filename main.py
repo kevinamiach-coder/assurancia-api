@@ -10,7 +10,7 @@ from PIL import Image
 from io import BytesIO
 import hashlib
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import secrets
 import os
 import base64
@@ -18,8 +18,28 @@ import json
 import re
 import requests
 from pymongo import MongoClient
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends
+import jwt
 
 app = FastAPI(title="AssuranceIA API", version="2.0")
+
+# JWT Security
+security = HTTPBearer()
+
+def verify_insurer_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify JWT token for insurer routes. Returns insurer_id if valid."""
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+        insurer_id = payload.get("insurer_id")
+        if not insurer_id:
+            raise HTTPException(status_code=401, detail="Invalid token: no insurer_id")
+        return insurer_id
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 # ----------------------------------------------------------------------------
 # Configuration
@@ -1069,7 +1089,7 @@ def create_claim(claim: ClaimCreate):
 
 
 @app.get("/claims")
-def get_claims():
+def get_claims(insurer_id: str = Depends(verify_insurer_token)):
     """Return all claims (without heavy base64 photo payloads)."""
     result = []
     for claim in claims_db.values():
@@ -1082,7 +1102,7 @@ def get_claims():
 
 
 @app.get("/claims/{claim_id}")
-def get_claim(claim_id: str):
+def get_claim(claim_id: str, insurer_id: str = Depends(verify_insurer_token)):
     """Return a single claim including its photos (base64)."""
     if claim_id not in claims_db:
         raise HTTPException(status_code=404, detail="Claim not found")
@@ -1243,7 +1263,7 @@ def create_declaration_link(request: DeclarationLinkRequest):
 # ========== DASHBOARD ROUTE ==========
 
 @app.get("/dashboard")
-async def dashboard():
+async def dashboard(insurer_id: str = Depends(verify_insurer_token)):
     """Dashboard to view all claims from MongoDB (falls back to in-memory)."""
     try:
         claims_list = list(claims_collection.find({}, {"_id": 0}).sort("created_at", -1))
@@ -2291,7 +2311,7 @@ def get_declaration_form(token: str):
 
 
 @app.get("/claim/{claim_id}")
-def view_claim_details(claim_id: str):
+def view_claim_details(claim_id: str, insurer_id: str = Depends(verify_insurer_token)):
     """INTERNAL (insurer/expert) view of a claim — full data incl. fraud score.
 
     Looks up by claim_id (used from the dashboard). Client-facing access goes
@@ -3412,7 +3432,7 @@ def _load_claim(claim_id: str) -> dict | None:
 
 
 @app.get("/claim/{claim_id}/pdf")
-def download_claim_pdf(claim_id: str):
+def download_claim_pdf(claim_id: str, insurer_id: str = Depends(verify_insurer_token)):
     """Generate and return the professional claim PDF as a file download."""
     claim = _load_claim(claim_id)
     if not claim:
@@ -3426,7 +3446,7 @@ def download_claim_pdf(claim_id: str):
 
 
 @app.post("/claim/{claim_id}/email-pdf")
-def email_claim_pdf(claim_id: str):
+def email_claim_pdf(claim_id: str, insurer_id: str = Depends(verify_insurer_token)):
     """Generate the claim PDF and send it to the insurer email via SMTP.
 
     Falls back to logging (and returns email_sent=False) when no SMTP service
