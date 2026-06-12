@@ -27,7 +27,48 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.requests import Request
 
+# Phase 1 Security Modules
+from auth import validate_jwt_secret, load_demo_users, hash_password, verify_password, generate_jwt_token
+from input_sanitizer import sanitize_email, sanitize_phone, sanitize_address, sanitize_text, is_safe
+from audit_logger import audit_log, audit_authenticate, audit_create_declaration_link, audit_submit_declaration, audit_view_claim
+
 app = FastAPI(title="AssuranceIA API", version="2.0")
+
+# ========== STARTUP: PHASE 1 SECURITY VALIDATION ==========
+@app.on_event("startup")
+async def validate_startup_security():
+    """Validate Phase 1 security configuration at startup."""
+    logger.info("🔐 Starting Phase 1 Security Validation...")
+
+    # 1. Validate JWT_SECRET
+    try:
+        validate_jwt_secret()
+    except RuntimeError as e:
+        logger.critical("FATAL: %s", e)
+        raise
+
+    # 2. Validate MONGODB_URI
+    mongodb_uri = os.getenv("MONGODB_URI", "").strip()
+    if not mongodb_uri:
+        logger.critical("FATAL: MONGODB_URI environment variable is not set.")
+        raise RuntimeError("MONGODB_URI is required for production deployment")
+    logger.info("✅ MONGODB_URI configured")
+
+    # 3. Validate ANTHROPIC_API_KEY
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip().strip('"').strip("'")
+    if anthropic_key:
+        logger.info("✅ ANTHROPIC_API_KEY configured (%d chars)", len(anthropic_key))
+    else:
+        logger.warning("⚠️  ANTHROPIC_API_KEY not set - Vision analysis disabled")
+
+    # 4. Load DEMO_USERS from environment
+    demo_users = load_demo_users()
+    if demo_users:
+        logger.info("✅ Loaded %d demo user(s) from DEMO_USERS", len(demo_users))
+    else:
+        logger.warning("⚠️  DEMO_USERS not configured - authentication may not work")
+
+    logger.info("✅ Phase 1 Security Validation PASSED")
 
 # Rate Limiting - use x-forwarded-for for proper client IP behind proxy
 def get_client_ip(request: Request) -> str:
@@ -1248,14 +1289,24 @@ def create_declaration_link(request: Request, declaration_req: DeclarationLinkRe
     Returns URL to send to client.
 
     Requires JWT authentication. Stores insurer_id for multi-tenant isolation.
+    Phase 1: Sanitizes email + logs in audit trail.
     """
+    client_ip = get_client_ip(request)
+
+    # Sanitize insurer and client emails
+    insurer_email = sanitize_email(declaration_req.insurer_email)
+    if not insurer_email:
+        raise HTTPException(status_code=400, detail="Email assurance invalide")
+
+    client_email = sanitize_email(declaration_req.client_email) if declaration_req.client_email else ""
+
     token = secrets.token_urlsafe(32)
 
     link_data = {
         "token": token,
         "insurer_id": insurer_id,  # MULTI-TENANT: Link is tied to this insurer
-        "insurer_email": declaration_req.insurer_email,
-        "client_email": declaration_req.client_email,
+        "insurer_email": insurer_email,
+        "client_email": client_email,
         "created_at": datetime.now().isoformat(),
         "status": "pending"  # Not yet filled by client
     }
@@ -1268,13 +1319,18 @@ def create_declaration_link(request: Request, declaration_req: DeclarationLinkRe
     except:
         pass
 
+    # Log link creation
+    audit_create_declaration_link(insurer_id, token, client_email)
+
     base_url = os.getenv("APP_URL", "https://assurancia-api-2.onrender.com")
     declaration_url = f"{base_url}/declare/{token}"
+
+    logger.info(f"✅ Declaration link created: {token[:8]}... for insurer_id={insurer_id} (IP={client_ip})")
 
     return {
         "token": token,
         "declaration_url": declaration_url,
-        "insurer_email": declaration_req.insurer_email,
+        "insurer_email": insurer_email,
         "message": f"Envoyez ce lien au client: {declaration_url}",
         "qr_code_hint": f"QR code to generate: {declaration_url}"
     }
@@ -1656,7 +1712,12 @@ async def authenticate(request: Request, username: str = "", password: str = "")
     Accepts JSON: {"username": "...", "password": "..."}
     Returns: {"token": "<JWT>", "insurer_id": "..."}
     Rate limited to 5/minute per IP to prevent brute force.
+
+    Phase 1: Uses bcrypt password verification + DEMO_USERS from environment.
     """
+    # Get client IP for audit logging
+    client_ip = get_client_ip(request)
+
     # Try to parse JSON body first
     try:
         body = await request.json()
@@ -1669,24 +1730,42 @@ async def authenticate(request: Request, username: str = "", password: str = "")
             username = form_data.get("username", "").strip()
             password = form_data.get("password", "")
         except:
+            audit_authenticate(username or "unknown", client_ip, False)
             raise HTTPException(status_code=400, detail="Invalid request format")
 
     if not username or not password:
+        audit_authenticate(username or "unknown", client_ip, False)
         raise HTTPException(status_code=400, detail="Username and password required")
 
-    # Check credentials
-    if username not in INSURER_CREDENTIALS:
+    # Load demo users from environment
+    demo_users = load_demo_users()
+
+    # Check credentials against demo users
+    if username not in demo_users and username not in INSURER_CREDENTIALS:
+        audit_authenticate(username, client_ip, False)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    cred = INSURER_CREDENTIALS[username]
-    if cred["password"] != password:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    # Try demo users first (Phase 1)
+    if username in demo_users:
+        user_hash = demo_users[username].get("password_hash", "")
+        if not user_hash or not verify_password(password, user_hash):
+            audit_authenticate(username, client_ip, False)
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        insurer_id = demo_users[username].get("insurer_id", "DEMO_INSURER")
+    else:
+        # Fallback to hardcoded credentials (legacy)
+        cred = INSURER_CREDENTIALS[username]
+        if cred["password"] != password:
+            audit_authenticate(username, client_ip, False)
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        insurer_id = cred["insurer_id"]
 
     # Generate JWT token
-    insurer_id = cred["insurer_id"]
     token = generate_jwt_token(insurer_id)
 
-    logger.info(f"✅ User '{username}' (insurer_id={insurer_id}) authenticated successfully")
+    # Log successful authentication
+    audit_authenticate(username, client_ip, True)
+    logger.info(f"✅ User '{username}' (insurer_id={insurer_id}) authenticated successfully (IP={client_ip})")
 
     return {
         "token": token,
@@ -2985,21 +3064,28 @@ def view_claim_details(claim_id: str, token: str = "", request: Request = None):
 
 
 @app.get("/api/claim/{claim_id}")
-def get_claim_json(claim_id: str, insurer_id: str = Depends(verify_insurer_token)):
+def get_claim_json(claim_id: str, request: Request, insurer_id: str = Depends(verify_insurer_token)):
     """API endpoint: return claim details as JSON for programmatic access.
 
     This endpoint returns the raw claim data as JSON (not HTML).
     Requires JWT authentication.
     MULTI-TENANT: Only returns claims owned by this insurer.
+    Phase 1: Logs access in audit trail.
     """
+    client_ip = get_client_ip(request)
     claim = _load_claim(claim_id)
     if not claim:
+        audit_view_claim(insurer_id, claim_id, client_ip)
         raise HTTPException(status_code=404, detail="Sinistre non trouvé")
 
     # MULTI-TENANT: Verify insurer owns this claim
     claim_insurer_id = claim.get("insurer_id", "UNKNOWN")
     if claim_insurer_id != insurer_id:
+        audit_view_claim(insurer_id, claim_id, client_ip)
         raise HTTPException(status_code=403, detail="Accès refusé: ce sinistre n'appartient pas à votre assurance")
+
+    # Log successful access
+    audit_view_claim(insurer_id, claim_id, client_ip)
 
     # Return all claim data as JSON
     # Remove any non-serializable fields (like binary photo data if stored as bytes)
@@ -3916,15 +4002,18 @@ async def submit_declaration(request: Request,
     Client submits declaration via token link.
     Creates claim + stores insurer email + verifies GPS location.
 
+    Phase 1: SANITIZES all user inputs before storing.
     NOTE: parameters use Form(...) because the frontend submits multipart/form-data
     (FormData). Plain str params would be read as query params and arrive empty.
     """
+    client_ip = get_client_ip(request)
+
     # Log exactly what arrived so we can never again wonder if data was received.
     logger.info(
         "📥 submit_declaration token=%s | email=%r firstname=%r lastname=%r "
-        "phone=%r type=%r address=%r desc_len=%d gps=(%s,%s)",
+        "phone=%r type=%r address=%r desc_len=%d gps=(%s,%s) | IP=%s",
         token, user_email, firstname, lastname, phone, damage_type,
-        address, len(description or ""), phone_gps_lat, phone_gps_lon,
+        address, len(description or ""), phone_gps_lat, phone_gps_lon, client_ip,
     )
 
     if token not in declaration_links:
@@ -3933,6 +4022,47 @@ async def submit_declaration(request: Request,
     link_data = declaration_links[token]
     insurer_email = link_data["insurer_email"]
     insurer_id = link_data.get("insurer_id", "UNKNOWN")  # MULTI-TENANT: Get insurer from link
+
+    # --- PHASE 1: SANITIZE ALL USER INPUTS ---
+    try:
+        user_email = sanitize_email(user_email)
+        if not user_email:
+            raise HTTPException(status_code=400, detail="Email invalide")
+
+        firstname = sanitize_text(firstname, max_length=100)
+        if not firstname:
+            raise HTTPException(status_code=400, detail="Prénom requis")
+
+        lastname = sanitize_text(lastname, max_length=100)
+        if not lastname:
+            raise HTTPException(status_code=400, detail="Nom requis")
+
+        phone = sanitize_phone(phone)
+        if not phone:
+            raise HTTPException(status_code=400, detail="Téléphone invalide")
+
+        address = sanitize_address(address, max_length=500)
+        if not address:
+            raise HTTPException(status_code=400, detail="Adresse invalide")
+
+        description = sanitize_text(description, max_length=2000)
+        if not description:
+            raise HTTPException(status_code=400, detail="Description requise")
+
+        damage_type = sanitize_text(damage_type, max_length=100)
+
+        # Validate no XSS/injection attempts
+        if not is_safe(user_email) or not is_safe(firstname) or not is_safe(lastname) \
+           or not is_safe(address) or not is_safe(description):
+            audit_submit_declaration(insurer_id, "UNKNOWN", client_ip)
+            raise HTTPException(status_code=400, detail="Contenu invalide détecté")
+
+        logger.info("✅ All inputs sanitized for claim submission")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("❌ Input sanitization failed: %r", e)
+        raise HTTPException(status_code=400, detail="Erreur lors du traitement des données")
 
     # Create claim
     claim_id = f"CLM-{datetime.now().year}-{uuid.uuid4().hex[:6].upper()}"
@@ -3984,11 +4114,35 @@ async def submit_declaration(request: Request,
     # Token remains valid for reuse - don't mark as "completed"
     # This allows the same token to be used for multiple declarations
 
+    # ---- PHASE 1: PHOTO RATE LIMITING ----
+    # Check: max 10 photos, total size <= 100 MB
+    photos_list = photos or []
+    if len(photos_list) > 10:
+        raise HTTPException(status_code=413, detail="Maximum 10 photos autorisées")
+
+    total_photo_bytes = 0
+    for upload in photos_list:
+        try:
+            contents = await upload.read()
+            total_photo_bytes += len(contents)
+            # Reset file pointer for later reading
+            await upload.seek(0)
+        except Exception as e:
+            logger.warning("⚠️ Could not read upload size %r: %r", getattr(upload, "filename", "?"), e)
+            continue
+
+    MAX_TOTAL_PHOTOS_BYTES = 100 * 1024 * 1024  # 100 MB total
+    if total_photo_bytes > MAX_TOTAL_PHOTOS_BYTES:
+        size_mb = total_photo_bytes / (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"Photos trop volumineuses (total {size_mb:.1f} MB, max 100 MB)")
+
+    logger.info("📸 Rate limiting check passed: %d photos, %.1f MB total", len(photos_list), total_photo_bytes / (1024 * 1024))
+
     # ---- Process inline photos from the FormData (optional) ----------------
     # Photos uploaded with the declaration are read, validated, EXIF-parsed and
     # attached to the claim so Vision analysis + EXIF fraud checks can run.
     photo_count = 0
-    for upload in (photos or []):
+    for upload in (photos_list or []):
         try:
             contents = await upload.read()
         except Exception as e:
@@ -4018,6 +4172,9 @@ async def submit_declaration(request: Request,
             logger.warning("⚠️ Failed to process photo %r: %r", upload.filename, e)
 
     logger.info("📸 submit_declaration attached %d photo(s) to %s", photo_count, claim_id)
+
+    # Log declaration submission
+    audit_submit_declaration(insurer_id, claim_id, client_ip)
 
     # ---- Claude Vision analysis (best-effort, never blocks claim creation) --
     # On any error, analyze_claim_photos_with_claude returns a structured
