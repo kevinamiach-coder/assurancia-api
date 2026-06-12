@@ -1274,7 +1274,7 @@ def create_declaration_link(request: Request, declaration_req: DeclarationLinkRe
     return {
         "token": token,
         "declaration_url": declaration_url,
-        "insurer_email": request.insurer_email,
+        "insurer_email": declaration_req.insurer_email,
         "message": f"Envoyez ce lien au client: {declaration_url}",
         "qr_code_hint": f"QR code to generate: {declaration_url}"
     }
