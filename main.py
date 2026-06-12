@@ -1241,17 +1241,21 @@ def download_report(claim_id: str):
 # ========== B2B WORKFLOW: ASSURANCE CREATES DECLARATION LINK ==========
 
 @app.post("/create-declaration-link")
-def create_declaration_link(request: DeclarationLinkRequest):
+@limiter.limit("10/minute")
+def create_declaration_link(request: Request, declaration_req: DeclarationLinkRequest, insurer_id: str = Depends(verify_insurer_token)):
     """
     Assurance/Courtier creates unique declaration link for client.
     Returns URL to send to client.
+
+    Requires JWT authentication. Stores insurer_id for multi-tenant isolation.
     """
     token = secrets.token_urlsafe(32)
 
     link_data = {
         "token": token,
-        "insurer_email": request.insurer_email,
-        "client_email": request.client_email,
+        "insurer_id": insurer_id,  # MULTI-TENANT: Link is tied to this insurer
+        "insurer_email": declaration_req.insurer_email,
+        "client_email": declaration_req.client_email,
         "created_at": datetime.now().isoformat(),
         "status": "pending"  # Not yet filled by client
     }
@@ -2650,6 +2654,11 @@ def view_claim_details(claim_id: str, token: str = "", request: Request = None):
     if not claim:
         raise HTTPException(status_code=404, detail="Sinistre non trouvé")
 
+    # MULTI-TENANT: Verify insurer owns this claim
+    claim_insurer_id = claim.get("insurer_id", "UNKNOWN")
+    if claim_insurer_id != insurer_id:
+        raise HTTPException(status_code=403, detail="Accès refusé: ce sinistre n'appartient pas à votre assurance")
+
     return _render_claim_details(claim_id, claim, client_view=False)
 
 
@@ -2659,10 +2668,16 @@ def get_claim_json(claim_id: str, insurer_id: str = Depends(verify_insurer_token
 
     This endpoint returns the raw claim data as JSON (not HTML).
     Requires JWT authentication.
+    MULTI-TENANT: Only returns claims owned by this insurer.
     """
     claim = _load_claim(claim_id)
     if not claim:
         raise HTTPException(status_code=404, detail="Sinistre non trouvé")
+
+    # MULTI-TENANT: Verify insurer owns this claim
+    claim_insurer_id = claim.get("insurer_id", "UNKNOWN")
+    if claim_insurer_id != insurer_id:
+        raise HTTPException(status_code=403, detail="Accès refusé: ce sinistre n'appartient pas à votre assurance")
 
     # Return all claim data as JSON
     # Remove any non-serializable fields (like binary photo data if stored as bytes)
@@ -2685,11 +2700,13 @@ def get_claim_json(claim_id: str, insurer_id: str = Depends(verify_insurer_token
 async def get_dashboard_json(request: Request, insurer_id: str = Depends(verify_insurer_token)):
     """API endpoint: return all claims as JSON for programmatic access.
 
-    Returns a list of all claims sorted by creation date (newest first).
+    Returns a list of claims FOR THIS INSURER ONLY (multi-tenant isolation).
+    Sorted by creation date (newest first).
     Requires JWT authentication.
     """
     try:
-        claims_list = list(claims_collection.find({}, {"_id": 0}).sort("created_at", -1))
+        # MULTI-TENANT: Filter by insurer_id
+        claims_list = list(claims_collection.find({"insurer_id": insurer_id}, {"_id": 0}).sort("created_at", -1))
     except Exception as e:
         logger.warning("⚠️  Dashboard could not read from MongoDB: %r — using in-memory fallback.", e)
         claims_list = []
@@ -2697,7 +2714,7 @@ async def get_dashboard_json(request: Request, insurer_id: str = Depends(verify_
     # Fallback / merge: if Mongo returned nothing but we have in-memory claims
     if not claims_list and claims_db:
         claims_list = sorted(
-            [{k: v for k, v in c.items() if k != "_id"} for c in claims_db.values()],
+            [{k: v for k, v in c.items() if k != "_id"} for c in claims_db.values() if c.get("insurer_id") == insurer_id],
             key=lambda c: c.get("created_at", ""),
             reverse=True,
         )
@@ -3593,6 +3610,7 @@ async def submit_declaration(request: Request,
 
     link_data = declaration_links[token]
     insurer_email = link_data["insurer_email"]
+    insurer_id = link_data.get("insurer_id", "UNKNOWN")  # MULTI-TENANT: Get insurer from link
 
     # Create claim
     claim_id = f"CLM-{datetime.now().year}-{uuid.uuid4().hex[:6].upper()}"
@@ -3615,6 +3633,7 @@ async def submit_declaration(request: Request,
     claim_data = {
         "claim_id": claim_id,
         "unique_token": unique_token,
+        "insurer_id": insurer_id,  # MULTI-TENANT: This claim belongs to this insurer
         "user_email": user_email,
         "firstname": firstname,
         "lastname": lastname,
