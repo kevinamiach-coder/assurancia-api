@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 import logging
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, RedirectResponse
 from pydantic import BaseModel
 from fpdf import FPDF
 from anthropic import Anthropic
@@ -1280,110 +1280,432 @@ def create_declaration_link(request: Request, declaration_req: DeclarationLinkRe
     }
 
 
+# ========== AUTHENTICATION HELPERS ==========
+
+# Simple in-memory insurer credentials (in production, use a proper database)
+INSURER_CREDENTIALS = {
+    "kevin": {"password": "password123", "insurer_id": "INSURER_TEST_001"},
+    "assurance1": {"password": "pass456", "insurer_id": "INSURER_TEST_002"},
+    "demo": {"password": "demo123", "insurer_id": "DEMO_INSURER"},
+}
+
+
+def generate_jwt_token(insurer_id: str, expires_in_hours: int = 24) -> str:
+    """Generate a JWT token for an insurer."""
+    now = datetime.now()
+    payload = {
+        "insurer_id": insurer_id,
+        "iat": now,
+        "exp": now + timedelta(hours=expires_in_hours),
+    }
+    token = jwt.encode(payload, os.getenv("JWT_SECRET"), algorithm="HS256")
+    return token
+
+
 # ========== LOGIN & DASHBOARD ROUTES ==========
+
+@app.get("/login-form")
+def login_form_page():
+    """Modern login form page with username/password authentication."""
+    html = """
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Connexion - AssuranceIA™</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+                background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                padding: 20px;
+                color: #e2e8f0;
+            }
+            .login-container {
+                width: 100%;
+                max-width: 420px;
+            }
+            .login-card {
+                background: linear-gradient(135deg, rgba(30, 41, 59, 0.95) 0%, rgba(51, 65, 85, 0.95) 100%);
+                border: 1px solid rgba(148, 163, 184, 0.2);
+                border-radius: 16px;
+                padding: 50px 40px;
+                backdrop-filter: blur(10px);
+                box-shadow: 0 25px 50px rgba(0, 0, 0, 0.3);
+            }
+            .logo-section {
+                text-align: center;
+                margin-bottom: 40px;
+            }
+            .logo {
+                font-size: 48px;
+                margin-bottom: 15px;
+            }
+            h1 {
+                font-size: 28px;
+                background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                margin-bottom: 10px;
+                font-weight: 700;
+            }
+            .subtitle {
+                color: #cbd5e1;
+                font-size: 14px;
+            }
+            .form-group {
+                margin-bottom: 25px;
+            }
+            label {
+                display: block;
+                margin-bottom: 10px;
+                font-weight: 600;
+                color: #f1f5f9;
+                font-size: 14px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            input[type="text"],
+            input[type="password"] {
+                width: 100%;
+                padding: 14px 16px;
+                background: rgba(15, 23, 42, 0.6);
+                border: 2px solid rgba(148, 163, 184, 0.2);
+                border-radius: 10px;
+                font-family: inherit;
+                font-size: 16px;
+                color: #f1f5f9;
+                transition: all 0.3s ease;
+            }
+            input[type="text"]::placeholder,
+            input[type="password"]::placeholder {
+                color: #64748b;
+            }
+            input[type="text"]:focus,
+            input[type="password"]:focus {
+                outline: none;
+                border-color: #3b82f6;
+                background: rgba(15, 23, 42, 0.8);
+                box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+            }
+            .login-button {
+                width: 100%;
+                padding: 14px;
+                background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+                border: none;
+                border-radius: 10px;
+                color: white;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                box-shadow: 0 10px 30px rgba(59, 130, 246, 0.3);
+                margin-top: 10px;
+            }
+            .login-button:hover:not(:disabled) {
+                transform: translateY(-2px);
+                box-shadow: 0 15px 40px rgba(59, 130, 246, 0.4);
+            }
+            .login-button:disabled {
+                opacity: 0.7;
+                cursor: not-allowed;
+            }
+            .login-button:active:not(:disabled) {
+                transform: translateY(0);
+            }
+            #errorMessage {
+                background: rgba(239, 68, 68, 0.1);
+                border: 1px solid rgba(239, 68, 68, 0.3);
+                color: #fca5a5;
+                padding: 12px 16px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+                display: none;
+                font-size: 14px;
+                text-align: center;
+            }
+            #successMessage {
+                background: rgba(34, 197, 94, 0.1);
+                border: 1px solid rgba(34, 197, 94, 0.3);
+                color: #86efac;
+                padding: 12px 16px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+                display: none;
+                font-size: 14px;
+                text-align: center;
+            }
+            .demo-section {
+                margin-top: 35px;
+                padding-top: 25px;
+                border-top: 1px solid rgba(148, 163, 184, 0.1);
+                text-align: center;
+            }
+            .demo-title {
+                font-size: 12px;
+                color: #64748b;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 15px;
+                font-weight: 600;
+            }
+            .demo-cred {
+                background: rgba(59, 130, 246, 0.05);
+                border: 1px solid rgba(59, 130, 246, 0.15);
+                border-radius: 8px;
+                padding: 12px;
+                margin-bottom: 8px;
+                font-size: 13px;
+                color: #cbd5e1;
+                font-family: 'Courier New', monospace;
+                cursor: pointer;
+                transition: all 0.2s ease;
+            }
+            .demo-cred:hover {
+                background: rgba(59, 130, 246, 0.1);
+                border-color: rgba(59, 130, 246, 0.3);
+            }
+            .footer {
+                text-align: center;
+                margin-top: 30px;
+                font-size: 12px;
+                color: #64748b;
+            }
+            @media (max-width: 480px) {
+                .login-card {
+                    padding: 35px 25px;
+                }
+                h1 {
+                    font-size: 24px;
+                }
+                .logo {
+                    font-size: 40px;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="login-container">
+            <div class="login-card">
+                <div class="logo-section">
+                    <div class="logo">🔐</div>
+                    <h1>AssuranceIA™</h1>
+                    <p class="subtitle">Dashboard Assurance</p>
+                </div>
+
+                <div id="errorMessage"></div>
+                <div id="successMessage"></div>
+
+                <form id="loginForm" onsubmit="handleLogin(event)">
+                    <div class="form-group">
+                        <label for="username">Nom d'utilisateur</label>
+                        <input
+                            type="text"
+                            id="username"
+                            name="username"
+                            placeholder="Entrez votre login"
+                            autocomplete="username"
+                            required
+                            autofocus
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label for="password">Mot de passe</label>
+                        <input
+                            type="password"
+                            id="password"
+                            name="password"
+                            placeholder="Entrez votre mot de passe"
+                            autocomplete="current-password"
+                            required
+                        >
+                    </div>
+
+                    <button type="submit" class="login-button" id="submitBtn">
+                        📤 Se connecter
+                    </button>
+                </form>
+
+                <div class="demo-section">
+                    <div class="demo-title">Comptes de démonstration</div>
+                    <div class="demo-cred" onclick="autofill('kevin', 'password123')">
+                        kevin / password123
+                    </div>
+                    <div class="demo-cred" onclick="autofill('assurance1', 'pass456')">
+                        assurance1 / pass456
+                    </div>
+                    <div class="demo-cred" onclick="autofill('demo', 'demo123')">
+                        demo / demo123
+                    </div>
+                </div>
+
+                <div class="footer">
+                    🔒 Connexion sécurisée avec JWT
+                </div>
+            </div>
+        </div>
+
+        <script>
+            const loginForm = document.getElementById('loginForm');
+            const submitBtn = document.getElementById('submitBtn');
+            const errorMsg = document.getElementById('errorMessage');
+            const successMsg = document.getElementById('successMessage');
+
+            function autofill(username, password) {
+                document.getElementById('username').value = username;
+                document.getElementById('password').value = password;
+                document.getElementById('username').focus();
+            }
+
+            async function handleLogin(event) {
+                event.preventDefault();
+
+                const username = document.getElementById('username').value.trim();
+                const password = document.getElementById('password').value;
+
+                if (!username || !password) {
+                    showError('Veuillez remplir tous les champs');
+                    return;
+                }
+
+                submitBtn.disabled = true;
+                submitBtn.textContent = '⏳ Connexion en cours...';
+                hideMessages();
+
+                try {
+                    const response = await fetch('/authenticate', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            username: username,
+                            password: password,
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok && data.token) {
+                        showSuccess('Connexion réussie! Redirection...');
+                        localStorage.setItem('assurance_jwt', data.token);
+                        localStorage.setItem('insurer_id', data.insurer_id);
+
+                        // Redirect after a brief delay for visual feedback
+                        setTimeout(() => {
+                            window.location.href = '/dashboard';
+                        }, 500);
+                    } else {
+                        showError(data.detail || 'Identifiants invalides');
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = '📤 Se connecter';
+                    }
+                } catch (error) {
+                    showError('Erreur réseau: ' + error.message);
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = '📤 Se connecter';
+                }
+            }
+
+            function showError(message) {
+                errorMsg.textContent = '❌ ' + message;
+                errorMsg.style.display = 'block';
+                successMsg.style.display = 'none';
+            }
+
+            function showSuccess(message) {
+                successMsg.textContent = '✓ ' + message;
+                successMsg.style.display = 'block';
+                errorMsg.style.display = 'none';
+            }
+
+            function hideMessages() {
+                errorMsg.style.display = 'none';
+                successMsg.style.display = 'none';
+            }
+
+            // Allow Enter key to submit
+            loginForm.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter' && e.target !== submitBtn) {
+                    handleLogin(e);
+                }
+            });
+        </script>
+    </body>
+    </html>
+    """
+    return Response(content=html, media_type="text/html")
+
+
+@app.post("/authenticate")
+@limiter.limit("5/minute")
+async def authenticate(request: Request, username: str = "", password: str = ""):
+    """Authenticate user with username/password and return JWT token.
+
+    Accepts JSON: {"username": "...", "password": "..."}
+    Returns: {"token": "<JWT>", "insurer_id": "..."}
+    Rate limited to 5/minute per IP to prevent brute force.
+    """
+    # Try to parse JSON body first
+    try:
+        body = await request.json()
+        username = body.get("username", "").strip()
+        password = body.get("password", "")
+    except:
+        # Fall back to form data if JSON parsing fails
+        try:
+            form_data = await request.form()
+            username = form_data.get("username", "").strip()
+            password = form_data.get("password", "")
+        except:
+            raise HTTPException(status_code=400, detail="Invalid request format")
+
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username and password required")
+
+    # Check credentials
+    if username not in INSURER_CREDENTIALS:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    cred = INSURER_CREDENTIALS[username]
+    if cred["password"] != password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Generate JWT token
+    insurer_id = cred["insurer_id"]
+    token = generate_jwt_token(insurer_id)
+
+    logger.info(f"✅ User '{username}' (insurer_id={insurer_id}) authenticated successfully")
+
+    return {
+        "token": token,
+        "insurer_id": insurer_id,
+        "message": "Authentication successful"
+    }
+
 
 @app.get("/login")
 def login_page(token: str = ""):
-    """Login page that accepts a JWT token and stores it in localStorage.
+    """Redirect to login-form. Legacy endpoint for backward compatibility.
 
-    Usage: /login?token=<JWT_TOKEN>
-    This page stores the token in localStorage and redirects to /dashboard.
+    Usage: /login-form for the new form page
     """
     if not token:
-        return Response(content="""
-        <!DOCTYPE html>
-        <html lang="fr">
-        <head>
-            <meta charset="UTF-8">
-            <title>Connexion - AssuranceIA™</title>
-            <style>
-                body {
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
-                    min-height: 100vh;
-                    margin: 0;
-                    color: #e2e8f0;
-                }
-                .container {
-                    background: rgba(30, 41, 59, 0.9);
-                    border: 1px solid rgba(148, 163, 184, 0.2);
-                    border-radius: 12px;
-                    padding: 40px;
-                    max-width: 400px;
-                    text-align: center;
-                }
-                h1 {
-                    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
-                    -webkit-background-clip: text;
-                    -webkit-text-fill-color: transparent;
-                    background-clip: text;
-                    margin-bottom: 20px;
-                }
-                input {
-                    width: 100%;
-                    padding: 12px;
-                    margin: 10px 0;
-                    border: 1px solid rgba(148, 163, 184, 0.3);
-                    border-radius: 6px;
-                    background: rgba(51, 65, 85, 0.5);
-                    color: #e2e8f0;
-                    font-size: 14px;
-                }
-                button {
-                    width: 100%;
-                    padding: 12px;
-                    margin-top: 20px;
-                    background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
-                    border: none;
-                    border-radius: 6px;
-                    color: white;
-                    font-weight: 600;
-                    cursor: pointer;
-                }
-                button:hover {
-                    opacity: 0.9;
-                }
-                code {
-                    background: rgba(51, 65, 85, 0.8);
-                    padding: 8px 12px;
-                    border-radius: 4px;
-                    font-size: 12px;
-                    color: #60a5fa;
-                    display: block;
-                    margin-top: 20px;
-                    word-break: break-all;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>🔐 AssuranceIA™</h1>
-                <p>Connectez-vous avec votre JWT token</p>
-                <input type="password" id="tokenInput" placeholder="Coller votre JWT token ici...">
-                <button onclick="login()">Se connecter</button>
-                <code id="hint" style="display:none;">Token requis</code>
-            </div>
-            <script>
-                function login() {
-                    const token = document.getElementById('tokenInput').value.trim();
-                    if (!token) {
-                        document.getElementById('hint').style.display = 'block';
-                        return;
-                    }
-                    window.location.href = '/login?token=' + encodeURIComponent(token);
-                }
-                document.getElementById('tokenInput').onkeypress = (e) => {
-                    if (e.key === 'Enter') login();
-                };
-            </script>
-        </body>
-        </html>
-        """, media_type="text/html")
+        # Redirect to the new login form
+        return RedirectResponse(url="/login-form", status_code=302)
 
-    # Token provided: validate and store
+    # Token provided: validate and store (legacy token-in-URL flow)
     try:
         payload = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
         insurer_id = payload.get("insurer_id")
@@ -1423,7 +1745,7 @@ def login_page(token: str = ""):
             <div class="container">
                 <h1>❌ Token invalide</h1>
                 <p>Le token JWT n'est pas valide ou a expiré.</p>
-                <a href="/login">← Retour à la connexion</a>
+                <a href="/login-form">← Retour à la connexion</a>
             </div>
         </body>
         </html>
