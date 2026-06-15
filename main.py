@@ -1093,6 +1093,22 @@ def health():
     }
 
 
+@app.get("/debug-demo-users")
+def debug_demo_users():
+    """Diagnostic endpoint: show what DEMO_USERS is actually loaded as.
+
+    No auth required. Lets us curl and verify the DEMO_USERS env var is
+    being parsed correctly (keys + count + raw env var prefix).
+    """
+    demo_users = load_demo_users()
+    return {
+        "demo_users_loaded": len(demo_users) > 0,
+        "demo_users_keys": list(demo_users.keys()) if demo_users else [],
+        "demo_users_count": len(demo_users),
+        "raw_env_var": os.getenv("DEMO_USERS", "NOT SET")[:100],  # first 100 chars
+    }
+
+
 @app.post("/claims")
 def create_claim(claim: ClaimCreate):
     """Create a new claim, geocode its address, verify GPS phone vs address."""
