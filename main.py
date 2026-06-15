@@ -87,14 +87,15 @@ def verify_insurer_token(credentials: HTTPAuthorizationCredentials = Depends(sec
     """Verify JWT token for insurer routes. Returns insurer_id if valid."""
     token = credentials.credentials
     try:
-        payload = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+        payload = jwt.decode(token, os.getenv("JWT_SECRET", "").strip(), algorithms=["HS256"])
         insurer_id = payload.get("insurer_id")
         if not insurer_id:
             raise HTTPException(status_code=401, detail="Invalid token: no insurer_id")
         return insurer_id
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
+    except jwt.InvalidTokenError as e:
+        logger.warning("JWT verification failed: %s", e)
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # ----------------------------------------------------------------------------
@@ -1354,7 +1355,7 @@ def generate_jwt_token(insurer_id: str, expires_in_hours: int = 24) -> str:
         "iat": now,
         "exp": now + timedelta(hours=expires_in_hours),
     }
-    token = jwt.encode(payload, os.getenv("JWT_SECRET"), algorithm="HS256")
+    token = jwt.encode(payload, os.getenv("JWT_SECRET", "").strip(), algorithm="HS256")
     return token
 
 
@@ -1786,7 +1787,7 @@ def login_page(token: str = ""):
 
     # Token provided: validate and store (legacy token-in-URL flow)
     try:
-        payload = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+        payload = jwt.decode(token, os.getenv("JWT_SECRET", "").strip(), algorithms=["HS256"])
         insurer_id = payload.get("insurer_id")
         if not insurer_id:
             raise ValueError("No insurer_id in token")
@@ -3020,7 +3021,7 @@ def view_claim_details(claim_id: str, token: str = "", request: Request = None):
     if token:
         # Token from query param
         try:
-            payload = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+            payload = jwt.decode(token, os.getenv("JWT_SECRET", "").strip(), algorithms=["HS256"])
             insurer_id = payload.get("insurer_id")
         except:
             raise HTTPException(status_code=401, detail="Token invalide")
@@ -3032,7 +3033,7 @@ def view_claim_details(claim_id: str, token: str = "", request: Request = None):
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
             try:
-                payload = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+                payload = jwt.decode(token, os.getenv("JWT_SECRET", "").strip(), algorithms=["HS256"])
                 insurer_id = payload.get("insurer_id")
             except:
                 raise HTTPException(status_code=401, detail="Token invalide")
