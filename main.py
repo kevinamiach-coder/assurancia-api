@@ -2018,6 +2018,15 @@ def dashboard(request: Request):
 
         <script>
             async function loadDashboard() {
+                // Auto-login: accept a JWT passed as ?token= in the URL (e.g.
+                // from the declaration success link), store it, then clean the URL.
+                const params = new URLSearchParams(window.location.search);
+                const urlToken = params.get('token');
+                if (urlToken) {
+                    localStorage.setItem('assurance_jwt', urlToken);
+                    window.history.replaceState({}, document.title, '/dashboard');
+                }
+
                 const token = localStorage.getItem('assurance_jwt');
                 if (!token) {
                     window.location.href = '/login';
@@ -4128,6 +4137,9 @@ async def submit_declaration(request: Request,
     # Mongo is down — endpoints fall back to claims_db).
     claims_db[claim_id] = claim_data
     token_to_claim[unique_token] = claim_id
+    # Track the most recent claim created via this link so /declare/{token}/success
+    # can reference it when offering the auto-login dashboard URL.
+    link_data["latest_claim_id"] = claim_id
     # Token remains valid for reuse - don't mark as "completed"
     # This allows the same token to be used for multiple declarations
 
@@ -4249,10 +4261,20 @@ async def submit_declaration(request: Request,
     base_url = os.getenv("APP_URL", "https://assurancia-api-2.onrender.com")
     client_view_url = f"/my-claim/{unique_token}"
 
+    # Generate a valid insurer JWT so the dashboard can be opened without a
+    # separate login step (auto-login via ?token= query param on /dashboard).
+    dashboard_url = None
+    try:
+        jwt_token = generate_jwt_token(insurer_id)
+        dashboard_url = f"{base_url}/dashboard?token={jwt_token}"
+    except Exception as e:
+        logger.warning("⚠️ Could not generate dashboard JWT for %s: %r", insurer_id, e)
+
     return {
         "mongo_saved": mongo_saved,
         "mongo_error": mongo_error,
         "claim_id": claim_id,  # internal reference (dashboard / insurer use)
+        "dashboard_url": dashboard_url,  # auto-login link to the insurer dashboard
         "unique_token": unique_token,  # client authorization token (unguessable)
         # Client-facing link (token-authenticated, no claim_id, no PDF exposed):
         "client_view_url": client_view_url,
@@ -4272,6 +4294,33 @@ async def submit_declaration(request: Request,
         "insurer_will_receive": f"PDF sera envoyé à {insurer_email} après analyse",
         "attestation_confirmed": bool(attestation_confirmed),
         "attestation_timestamp": claim_data["attestation_timestamp"],
+    }
+
+
+@app.get("/declare/{token}/success")
+def declare_success(token: str):
+    """Confirm the created claim and return an auto-login dashboard link.
+
+    Generates a valid insurer JWT for the insurer that owns this declaration
+    link, so the dashboard can be opened without a separate login step.
+    """
+    if token not in declaration_links:
+        raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
+
+    link_data = declaration_links[token]
+    insurer_id = link_data.get("insurer_id", "UNKNOWN")
+
+    # Generate a valid JWT for this insurer_id.
+    jwt_token = generate_jwt_token(insurer_id)
+
+    base_url = os.getenv("APP_URL", "https://assurancia-api-2.onrender.com")
+
+    return {
+        "success": True,
+        "message": "Sinistre créé avec succès!",
+        "claim_ref": link_data.get("latest_claim_id"),
+        # Dashboard auto-login: the /dashboard page reads ?token= and stores it.
+        "dashboard_url": f"{base_url}/dashboard?token={jwt_token}",
     }
 
 
