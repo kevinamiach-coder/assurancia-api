@@ -1364,9 +1364,13 @@ def create_declaration_link(request: Request, declaration_req: DeclarationLinkRe
 
     # Save to MongoDB so token survives Render redeploys
     try:
-        declaration_links_collection.insert_one(link_data)
-    except:
-        pass
+        declaration_links_collection.replace_one(
+            {"token": token},
+            link_data,
+            upsert=True
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to save declaration link to MongoDB: {e}")
 
     # Log link creation
     audit_create_declaration_link(insurer_id, token, client_email)
