@@ -2158,7 +2158,7 @@ def dashboard(request: Request):
                 }
 
                 // Demander l'email de l'assurance à l'utilisateur
-                const insurerEmail = prompt('Email de l\'assurance/courtier:');
+                const insurerEmail = prompt(`Email de l'assurance/courtier:`);
                 if (!insurerEmail) {
                     return;
                 }
