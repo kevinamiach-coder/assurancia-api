@@ -9,6 +9,26 @@ import jwt
 logger = logging.getLogger("assurancia")
 
 
+# ============================================================================
+# HARDCODED DEMO USERS - GUARANTEED FALLBACK
+# ----------------------------------------------------------------------------
+# These credentials ALWAYS work, even if MongoDB is down and even if the
+# DEMO_USERS environment variable is missing or misconfigured.
+#
+# Plaintext passwords are stored here (demo accounts only) and hashed at
+# runtime, so login is guaranteed to work end-to-end. This is the source of
+# truth for the demo logins:
+#     kevin / password123
+#     demo  / demo123
+#     assurance / pass456
+# ============================================================================
+HARDCODED_DEMO_USERS = [
+    {"username": "kevin", "password": "password123", "insurer_id": "INSURER_TEST_001"},
+    {"username": "demo", "password": "demo123", "insurer_id": "DEMO_INSURER"},
+    {"username": "assurance", "password": "pass456", "insurer_id": "INSURER_TEST_002"},
+]
+
+
 def validate_jwt_secret():
     """Validate JWT_SECRET at startup.
 
@@ -31,59 +51,32 @@ def validate_jwt_secret():
     logger.info("✅ JWT_SECRET validated (%d characters)", len(jwt_secret))
 
 
-def get_demo_users_from_db() -> dict:
-    """Load demo users from MongoDB (collection: demo_users in the 'assurancia' db).
+def _build_hardcoded_users() -> dict:
+    """Build the hardcoded demo users dict with freshly-computed bcrypt hashes.
 
-    This is the primary, robust source for credentials. It avoids the fragility of
-    parsing the DEMO_USERS environment variable (which is easy to misconfigure and
-    has been unreliable on the hosting platform).
-
-    Returns an empty dict if MongoDB is unreachable or has no users, so callers can
-    safely fall back to the DEMO_USERS env var.
+    This NEVER touches the network or environment, so it cannot fail. It is the
+    last-resort guarantee that login works.
     """
-    mongo_uri = os.getenv("MONGODB_URI", "").strip()
-    if not mongo_uri:
-        return {}
-
-    try:
-        from pymongo import MongoClient
-
-        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
-        db = client["assurancia"]
-        users_collection = db["demo_users"]
-
-        users = {}
-        for user_doc in users_collection.find({}):
-            username = user_doc.get("username")
-            if username:
-                users[username] = {
-                    "password_hash": user_doc.get("password_hash", ""),
-                    "insurer_id": user_doc.get("insurer_id", "UNKNOWN"),
-                }
-        return users
-    except Exception as e:
-        logger.warning("⚠️ Could not load demo users from MongoDB: %s", e)
-        return {}
+    users = {}
+    for u in HARDCODED_DEMO_USERS:
+        users[u["username"]] = {
+            "password_hash": hash_password(u["password"]),
+            "insurer_id": u.get("insurer_id", "DEMO_INSURER"),
+        }
+    return users
 
 
-def load_demo_users() -> dict:
-    """Load demo users.
+def _users_from_env() -> dict:
+    """Parse demo users from the DEMO_USERS environment variable (JSON list).
 
-    Order of precedence:
-      1. MongoDB collection 'demo_users' (robust, primary source)
-      2. DEMO_USERS environment variable (JSON, legacy fallback)
+    Tolerant of BOTH key styles:
+      - {"username": "...", "password": "plaintext", ...}      -> hashed at runtime
+      - {"username": "...", "password_hash": "$2b$...", ...}   -> used as-is
+
+    Returns {} if the variable is missing or invalid.
     """
-    # 1. Try MongoDB first (primary source)
-    db_users = get_demo_users_from_db()
-    if db_users:
-        logger.info("✅ Loaded %d demo user(s) from MongoDB", len(db_users))
-        return db_users
-
-    # 2. Fallback: DEMO_USERS environment variable (legacy)
     demo_users_json = os.getenv("DEMO_USERS", "").strip()
-
     if not demo_users_json:
-        logger.warning("⚠️ DEMO_USERS environment variable not set. Demo users unavailable.")
         return {}
 
     try:
@@ -91,19 +84,57 @@ def load_demo_users() -> dict:
         users_dict = {}
         for user in users_list:
             username = user.get("username")
-            if username:
-                users_dict[username] = {
-                    "password_hash": user.get("password_hash", ""),
-                    "insurer_id": user.get("insurer_id", "UNKNOWN")
-                }
-        logger.info("✅ Loaded %d demo user(s) from DEMO_USERS", len(users_dict))
+            if not username:
+                continue
+
+            # Prefer an explicit hash; otherwise hash the plaintext password.
+            password_hash = user.get("password_hash", "").strip()
+            if not password_hash:
+                plaintext = user.get("password", "")
+                if plaintext:
+                    password_hash = hash_password(plaintext)
+
+            if not password_hash:
+                # Nothing usable for this user; skip it.
+                continue
+
+            users_dict[username] = {
+                "password_hash": password_hash,
+                "insurer_id": user.get("insurer_id", "UNKNOWN"),
+            }
         return users_dict
     except json.JSONDecodeError as e:
         logger.error("❌ Failed to parse DEMO_USERS JSON: %s", e)
         return {}
     except Exception as e:
-        logger.error("❌ Failed to load demo users: %s", e)
+        logger.error("❌ Failed to load demo users from env: %s", e)
         return {}
+
+
+def load_demo_users() -> dict:
+    """Load demo users with a guaranteed, never-empty result.
+
+    Strategy (merge, hardcoded wins so the known demo logins ALWAYS work):
+      1. Start with the hardcoded demo users (always present, hashed at runtime).
+      2. Layer in any extra users from the DEMO_USERS env var.
+
+    The result ALWAYS contains kevin/demo/assurance, regardless of MongoDB or
+    environment configuration. This eliminates the previous failure mode where a
+    MongoDB outage or a malformed env var made login impossible.
+    """
+    users = _build_hardcoded_users()
+
+    # Layer env users on top, but never let them remove the hardcoded demos.
+    env_users = _users_from_env()
+    for username, data in env_users.items():
+        if username not in users:
+            users[username] = data
+
+    logger.info(
+        "✅ Loaded %d demo user(s) (hardcoded fallback active): %s",
+        len(users), ", ".join(sorted(users.keys())),
+    )
+    return users
 
 
 def hash_password(password: str) -> str:
