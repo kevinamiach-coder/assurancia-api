@@ -1908,6 +1908,18 @@ def dashboard(request: Request):
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
             }
+            .create-btn {
+                background: linear-gradient(135deg, rgba(59, 130, 246, 0.3) 0%, rgba(139, 92, 246, 0.3) 100%);
+                border: 1px solid rgba(59, 130, 246, 0.5);
+                color: #60a5fa;
+                padding: 8px 16px;
+                border-radius: 6px;
+                cursor: pointer;
+                font-weight: 600;
+            }
+            .create-btn:hover {
+                background: linear-gradient(135deg, rgba(59, 130, 246, 0.4) 0%, rgba(139, 92, 246, 0.4) 100%);
+            }
             .logout-btn {
                 background: rgba(239, 68, 68, 0.2);
                 border: 1px solid rgba(239, 68, 68, 0.5);
@@ -2006,7 +2018,10 @@ def dashboard(request: Request):
                     <h1>🔐 AssuranceIA™ Dashboard</h1>
                     <p>Tous les sinistres déclarés et analysés</p>
                 </div>
-                <button class="logout-btn" onclick="logout()">📤 Déconnexion</button>
+                <div style="display: flex; gap: 12px;">
+                    <button class="create-btn" onclick="createDeclaration()">📝 Créer un sinistre</button>
+                    <button class="logout-btn" onclick="logout()">📤 Déconnexion</button>
+                </div>
             </header>
 
             <div class="table-container" id="tableContainer">
@@ -2133,6 +2148,52 @@ def dashboard(request: Request):
             function viewClaim(claimId) {
                 const token = localStorage.getItem('assurance_jwt');
                 window.location.href = `/claim/${claimId}?token=${encodeURIComponent(token)}`;
+            }
+
+            async function createDeclaration() {
+                const token = localStorage.getItem('assurance_jwt');
+                if (!token) {
+                    window.location.href = '/login';
+                    return;
+                }
+
+                // Demander l'email de l'assurance à l'utilisateur
+                const insurerEmail = prompt('Email de l\'assurance/courtier:');
+                if (!insurerEmail) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/create-declaration-link', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            insurer_email: insurerEmail,
+                            client_email: null
+                        })
+                    });
+
+                    if (!response.ok) {
+                        if (response.status === 401 || response.status === 403) {
+                            localStorage.removeItem('assurance_jwt');
+                            window.location.href = '/login';
+                            return;
+                        }
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    const data = await response.json();
+                    if (data.declaration_url) {
+                        window.location.href = data.declaration_url;
+                    } else {
+                        alert('Erreur: pas de lien de déclaration générée');
+                    }
+                } catch (error) {
+                    alert(`Erreur: ${error.message}`);
+                }
             }
 
             function logout() {
