@@ -188,6 +188,33 @@ app.add_middleware(
 )
 
 
+def get_declaration_link(token: str) -> dict | None:
+    """Resolve a declaration-link token to its stored data.
+
+    Single source of truth for "is this token valid?". Checks the in-process
+    memory cache first (fast path), then falls back to MongoDB (durable path
+    that survives redeploys and works across worker processes). Returns the
+    link dict, or None if the token does not exist anywhere.
+    """
+    if not token:
+        return None
+
+    cached = declaration_links.get(token)
+    if cached:
+        return cached
+
+    try:
+        doc = declaration_links_collection.find_one({"token": token}, {"_id": 0})
+    except Exception as e:
+        logger.error("❌ MongoDB lookup failed for declaration token %s...: %r", token[:8], e)
+        return None
+
+    if doc:
+        declaration_links[token] = doc  # Cache for subsequent requests in this process.
+        return doc
+    return None
+
+
 # ========== STARTUP: Load declaration links from MongoDB ==========
 @app.on_event("startup")
 async def load_declaration_links_from_mongodb():
@@ -1360,17 +1387,42 @@ def create_declaration_link(request: Request, declaration_req: DeclarationLinkRe
         "status": "pending"  # Not yet filled by client
     }
 
+    # Always cache in memory (fast path for the same worker process).
     declaration_links[token] = link_data
 
-    # Save to MongoDB so token survives Render redeploys
+    # Persist to MongoDB so the token survives Render redeploys AND works across
+    # multiple worker processes. This is the SOURCE OF TRUTH — if it fails we
+    # must NOT hand the user a link that points to nothing.
+    mongo_saved = False
     try:
-        declaration_links_collection.replace_one(
+        result = declaration_links_collection.replace_one(
             {"token": token},
             link_data,
-            upsert=True
+            upsert=True,
         )
+        # Verify the write really landed by reading it straight back.
+        verify = declaration_links_collection.find_one({"token": token}, {"_id": 0, "token": 1})
+        mongo_saved = bool(verify)
+        if mongo_saved:
+            logger.info(
+                "💾 Declaration link persisted to MongoDB (token=%s..., matched=%s, upserted=%s)",
+                token[:8], result.matched_count, result.upserted_id,
+            )
+        else:
+            logger.error("❌ Declaration link write to MongoDB did NOT verify (read-back empty).")
     except Exception as e:
-        logger.error(f"❌ Failed to save declaration link to MongoDB: {e}")
+        logger.error(f"❌ Failed to save declaration link to MongoDB: {e!r}")
+
+    # If Mongo could not store the token, the link will 404 from any other
+    # process/after a redeploy. Fail loudly so the insurer never sends a dead link.
+    if not mongo_saved:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Le lien n'a pas pu être enregistré (base de données indisponible). "
+                "Réessayez dans quelques instants."
+            ),
+        )
 
     # Log link creation
     audit_create_declaration_link(insurer_id, token, client_email)
@@ -2576,17 +2628,8 @@ def get_declaration_form(token: str):
     # Check if it's a declaration link (pending)
     link_data = None
 
-    # First check in-memory cache
-    if token in declaration_links:
-        link_data = declaration_links[token]
-    else:
-        # If not in memory, check MongoDB (in case of Render redeploy)
-        try:
-            link_data = declaration_links_collection.find_one({"token": token})
-            if link_data:
-                declaration_links[token] = link_data  # Cache in memory
-        except:
-            pass
+    # Resolve via the shared helper (memory cache → MongoDB fallback).
+    link_data = get_declaration_link(token)
 
     if link_data:
         client_email = link_data.get("client_email", "")
@@ -4138,10 +4181,10 @@ async def submit_declaration(request: Request,
         address, len(description or ""), phone_gps_lat, phone_gps_lon, client_ip,
     )
 
-    if token not in declaration_links:
+    link_data = get_declaration_link(token)
+    if not link_data:
         raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
 
-    link_data = declaration_links[token]
     insurer_email = link_data["insurer_email"]
     insurer_id = link_data.get("insurer_id", "UNKNOWN")  # MULTI-TENANT: Get insurer from link
 
@@ -4400,10 +4443,10 @@ def declare_success(token: str):
     Generates a valid insurer JWT for the insurer that owns this declaration
     link, so the dashboard can be opened without a separate login step.
     """
-    if token not in declaration_links:
+    link_data = get_declaration_link(token)
+    if not link_data:
         raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
 
-    link_data = declaration_links[token]
     insurer_id = link_data.get("insurer_id", "UNKNOWN")
 
     # Generate a valid JWT for this insurer_id.
