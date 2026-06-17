@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 import logging
 from fastapi.middleware.cors import CORSMiddleware
@@ -1384,25 +1387,6 @@ def create_declaration_link(request: Request, declaration_req: DeclarationLinkRe
 
 # ========== AUTHENTICATION HELPERS ==========
 
-# Simple in-memory insurer credentials (in production, use a proper database)
-INSURER_CREDENTIALS = {
-    "kevin": {"password": "password123", "insurer_id": "INSURER_TEST_001"},
-    "assurance1": {"password": "pass456", "insurer_id": "INSURER_TEST_002"},
-    "demo": {"password": "demo123", "insurer_id": "DEMO_INSURER"},
-}
-
-
-def generate_jwt_token(insurer_id: str, expires_in_hours: int = 24) -> str:
-    """Generate a JWT token for an insurer."""
-    now = datetime.now()
-    payload = {
-        "insurer_id": insurer_id,
-        "iat": now,
-        "exp": now + timedelta(hours=expires_in_hours),
-    }
-    token = jwt.encode(payload, os.getenv("JWT_SECRET", "").strip(), algorithm="HS256")
-    return token
-
 
 # ========== LOGIN & DASHBOARD ROUTES ==========
 
@@ -1736,13 +1720,6 @@ def login_form_page():
                 errorMsg.style.display = 'none';
                 successMsg.style.display = 'none';
             }
-
-            // Allow Enter key to submit
-            loginForm.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter' && e.target !== submitBtn) {
-                    handleLogin(e);
-                }
-            });
         </script>
     </body>
     </html>
@@ -1787,24 +1764,16 @@ async def authenticate(request: Request, username: str = "", password: str = "")
     demo_users = load_demo_users()
 
     # Check credentials against demo users
-    if username not in demo_users and username not in INSURER_CREDENTIALS:
+    if username not in demo_users:
         audit_authenticate(username, client_ip, False)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Try demo users first (Phase 1)
-    if username in demo_users:
-        user_hash = demo_users[username].get("password_hash", "")
-        if not user_hash or not verify_password(password, user_hash):
-            audit_authenticate(username, client_ip, False)
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        insurer_id = demo_users[username].get("insurer_id", "DEMO_INSURER")
-    else:
-        # Fallback to hardcoded credentials (legacy)
-        cred = INSURER_CREDENTIALS[username]
-        if cred["password"] != password:
-            audit_authenticate(username, client_ip, False)
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        insurer_id = cred["insurer_id"]
+    # Verify demo user credentials (Phase 1)
+    user_hash = demo_users[username].get("password_hash", "")
+    if not user_hash or not verify_password(password, user_hash):
+        audit_authenticate(username, client_ip, False)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    insurer_id = demo_users[username].get("insurer_id", "DEMO_INSURER")
 
     # Generate JWT token
     token = generate_jwt_token(insurer_id)
