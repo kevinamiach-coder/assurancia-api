@@ -5136,6 +5136,196 @@ def build_claim_pdf(claim: dict) -> bytes:
     return bytes(out)
 
 
+# ==========================================================================
+# DEMO ENDPOINTS (no auth) - simple in-memory declaration flow
+# ==========================================================================
+
+# In-memory store for demo declarations (no MongoDB, no auth).
+demo_claims = []
+
+
+@app.get("/demo-declare")
+def demo_declare_form():
+    """Simple HTML form to declare a sinistre (no auth)."""
+    html = """<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Déclarer un sinistre - Démo</title>
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:#f3f4f6; margin:0; padding:24px; }
+    .card { max-width:520px; margin:0 auto; background:#fff; border-radius:14px; padding:28px; box-shadow:0 6px 24px rgba(0,0,0,.08); }
+    h1 { font-size:22px; margin:0 0 6px; }
+    p.sub { color:#6b7280; margin:0 0 20px; }
+    label { display:block; font-weight:600; margin:14px 0 6px; font-size:14px; }
+    input, textarea { width:100%; box-sizing:border-box; padding:11px 12px; border:1px solid #d1d5db; border-radius:8px; font-size:15px; }
+    button { margin-top:22px; width:100%; background:#2563eb; color:#fff; border:0; padding:14px; border-radius:9px; font-size:16px; font-weight:600; cursor:pointer; }
+    button:hover { background:#1d4ed8; }
+    .link { display:block; text-align:center; margin-top:16px; color:#2563eb; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Déclarer un sinistre</h1>
+    <p class="sub">Remplissez le formulaire, l'IA analysera votre photo.</p>
+    <form action="/demo-declare-submit" method="post" enctype="multipart/form-data">
+      <label>Email</label>
+      <input type="email" name="email" required placeholder="vous@exemple.com">
+      <label>Nom complet</label>
+      <input type="text" name="nom" required placeholder="Jean Dupont">
+      <label>Téléphone</label>
+      <input type="tel" name="telephone" placeholder="06 12 34 56 78">
+      <label>Adresse</label>
+      <input type="text" name="adresse" placeholder="12 rue de la Paix, Paris">
+      <label>Description (optionnel)</label>
+      <textarea name="description" rows="3" placeholder="Décrivez le sinistre..."></textarea>
+      <label>Photo du sinistre</label>
+      <input type="file" name="photo" accept="image/*" required>
+      <button type="submit">Envoyer la déclaration</button>
+    </form>
+    <a class="link" href="/demo-dashboard">Voir le tableau de bord →</a>
+  </div>
+</body>
+</html>"""
+    return Response(content=html, media_type="text/html")
+
+
+@app.post("/demo-declare-submit")
+async def demo_declare_submit(
+    email: str = Form(...),
+    nom: str = Form(...),
+    telephone: str = Form(""),
+    adresse: str = Form(""),
+    description: str = Form(""),
+    photo: UploadFile = File(...),
+):
+    """Receive the form, run Claude Vision, store in memory, redirect to dashboard."""
+    declaration_id = str(uuid.uuid4())[:8]
+
+    # Read photo bytes -> base64 for Claude Vision.
+    raw = await photo.read()
+    b64 = base64.b64encode(raw).decode("utf-8")
+    content_type = photo.content_type or "image/jpeg"
+
+    # Run Claude Vision using the existing helper.
+    claim_context = {
+        "damage_type": "inconnu",
+        "description": description or "Non précisé",
+        "address": adresse or "Non précisé",
+    }
+    try:
+        analysis = call_claude_vision(
+            {"data": b64, "content_type": content_type}, claim_context
+        )
+    except Exception as e:
+        logger.error("❌ demo vision failed id=%s: %r", declaration_id, e)
+        analysis = {
+            "summary": f"Analyse échouée ({type(e).__name__}).",
+            "fraud_score": 0,
+            "recommendation": "Inspection manuelle requise.",
+            "confidence": "low",
+        }
+
+    if not isinstance(analysis, dict):
+        analysis = {"summary": str(analysis), "fraud_score": 0}
+
+    declaration = {
+        "id": declaration_id,
+        "email": email,
+        "nom": nom,
+        "telephone": telephone,
+        "adresse": adresse,
+        "description": description,
+        "fraud_score": analysis.get("fraud_score", 0),
+        "analysis": analysis,
+        "created_at": datetime.now().isoformat(),
+    }
+    demo_claims.append(declaration)
+    logger.info("✅ Demo declaration stored id=%s (fraud_score=%s)",
+                declaration_id, declaration["fraud_score"])
+
+    return RedirectResponse(
+        url=f"/demo-dashboard?declaration_id={declaration_id}", status_code=303
+    )
+
+
+@app.get("/demo-dashboard")
+def demo_dashboard(declaration_id: str = ""):
+    """Show all in-memory declarations (no auth)."""
+    rows = ""
+    for d in reversed(demo_claims):
+        score = d.get("fraud_score", 0)
+        try:
+            score_n = float(score)
+        except (TypeError, ValueError):
+            score_n = 0
+        if score_n <= 20:
+            color = "#16a34a"
+        elif score_n <= 50:
+            color = "#d97706"
+        else:
+            color = "#dc2626"
+        analysis = d.get("analysis", {}) or {}
+        summary = (analysis.get("summary")
+                   or analysis.get("visible_damage")
+                   or analysis.get("recommendation")
+                   or "Analyse IA effectuée.")
+        highlight = " style=\"background:#eff6ff;\"" if d["id"] == declaration_id else ""
+        rows += f"""
+        <tr{highlight}>
+          <td><code>{d['id']}</code></td>
+          <td>{d.get('nom','')}</td>
+          <td>{d.get('email','')}</td>
+          <td><span style="background:{color};color:#fff;padding:3px 9px;border-radius:12px;font-weight:600;">{int(score_n)}</span></td>
+          <td style="max-width:340px;">{summary}</td>
+        </tr>"""
+
+    if not rows:
+        rows = '<tr><td colspan="5" style="text-align:center;color:#6b7280;padding:24px;">Aucune déclaration pour le moment.</td></tr>'
+
+    banner = ""
+    if declaration_id:
+        banner = (f'<div style="background:#dcfce7;color:#166534;padding:12px 16px;'
+                  f'border-radius:8px;margin-bottom:18px;">✅ Déclaration '
+                  f'<b>{declaration_id}</b> enregistrée avec succès.</div>')
+
+    html = f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tableau de bord - Démo</title>
+  <style>
+    body {{ font-family:-apple-system, Segoe UI, Roboto, sans-serif; background:#f3f4f6; margin:0; padding:24px; }}
+    .wrap {{ max-width:980px; margin:0 auto; }}
+    h1 {{ font-size:24px; margin:0 0 4px; }}
+    p.sub {{ color:#6b7280; margin:0 0 20px; }}
+    table {{ width:100%; border-collapse:collapse; background:#fff; border-radius:12px; overflow:hidden; box-shadow:0 4px 18px rgba(0,0,0,.06); }}
+    th, td {{ text-align:left; padding:13px 14px; border-bottom:1px solid #f0f0f0; font-size:14px; vertical-align:top; }}
+    th {{ background:#1e293b; color:#fff; }}
+    code {{ background:#f1f5f9; padding:2px 6px; border-radius:5px; }}
+    a.btn {{ display:inline-block; background:#2563eb; color:#fff; text-decoration:none; padding:11px 18px; border-radius:9px; font-weight:600; margin-bottom:18px; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Tableau de bord des sinistres</h1>
+    <p class="sub">{len(demo_claims)} déclaration(s) en mémoire.</p>
+    {banner}
+    <a class="btn" href="/demo-declare">+ Nouvelle déclaration</a>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Nom</th><th>Email</th><th>Score fraude</th><th>Analyse IA</th></tr>
+      </thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </div>
+</body>
+</html>"""
+    return Response(content=html, media_type="text/html")
+
+
 if __name__ == "__main__":
     import uvicorn
 
