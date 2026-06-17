@@ -2187,11 +2187,24 @@ def dashboard(request: Request):
 
                     const data = await response.json();
                     if (data.declaration_url) {
-                        // Show the link to the user
-                        const message = `✅ Lien de déclaration généré!\n\nEnvoyez ce lien au client:\n\n${data.declaration_url}\n\nLe lien a été copié dans le presse-papiers.`;
-                        alert(message);
+                        // Show the link in a modal
+                        const linkHtml = `
+                            <div style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(15, 23, 42, 0.95); border: 2px solid rgba(59, 130, 246, 0.5); border-radius: 12px; padding: 30px; width: 90%; max-width: 600px; z-index: 10000; box-shadow: 0 10px 40px rgba(0,0,0,0.3); backdrop-filter: blur(10px);">
+                                <h2 style="color: #60a5fa; margin-bottom: 20px; font-size: 20px;">✅ Lien de déclaration généré!</h2>
+                                <p style="color: #cbd5e1; margin-bottom: 15px;">Envoyez ce lien au CLIENT:</p>
+                                <input type="text" value="${data.declaration_url}" readonly style="width: 100%; padding: 12px; background: rgba(30, 41, 59, 0.8); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 6px; color: #60a5fa; font-family: monospace; font-size: 12px; margin-bottom: 15px;" id="linkInput">
+                                <div style="display: flex; gap: 10px;">
+                                    <button onclick="document.getElementById('linkInput').select(); document.execCommand('copy'); alert('✅ Copié!'); document.getElementById('linkModal').remove();" style="flex: 1; padding: 10px; background: rgba(59, 130, 246, 0.3); border: 1px solid rgba(59, 130, 246, 0.5); color: #60a5fa; border-radius: 6px; cursor: pointer; font-weight: 600;">📋 Copier le lien</button>
+                                    <button onclick="document.getElementById('linkModal').remove(); window.open('${data.declaration_url}', '_blank');" style="flex: 1; padding: 10px; background: rgba(139, 92, 246, 0.3); border: 1px solid rgba(139, 92, 246, 0.5); color: #d8b4fe; border-radius: 6px; cursor: pointer; font-weight: 600;">🔗 Ouvrir le formulaire</button>
+                                </div>
+                            </div>
+                        `;
+                        const modal = document.createElement('div');
+                        modal.id = 'linkModal';
+                        modal.innerHTML = linkHtml;
+                        document.body.appendChild(modal);
 
-                        // Copy to clipboard
+                        // Copy to clipboard as backup
                         navigator.clipboard.writeText(data.declaration_url).catch(err => {
                             console.error('Clipboard copy failed:', err);
                         });
