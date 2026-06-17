@@ -2187,7 +2187,14 @@ def dashboard(request: Request):
 
                     const data = await response.json();
                     if (data.declaration_url) {
-                        window.location.href = data.declaration_url;
+                        // Show the link to the user
+                        const message = `✅ Lien de déclaration généré!\n\nEnvoyez ce lien au client:\n\n${data.declaration_url}\n\nLe lien a été copié dans le presse-papiers.`;
+                        alert(message);
+
+                        // Copy to clipboard
+                        navigator.clipboard.writeText(data.declaration_url).catch(err => {
+                            console.error('Clipboard copy failed:', err);
+                        });
                     } else {
                         alert('Erreur: pas de lien de déclaration générée');
                     }
