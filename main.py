@@ -2570,8 +2570,21 @@ async def landing_page():
 def get_declaration_form(token: str):
     """Beautiful declaration form for AssuranceIA™."""
     # Check if it's a declaration link (pending)
+    link_data = None
+
+    # First check in-memory cache
     if token in declaration_links:
         link_data = declaration_links[token]
+    else:
+        # If not in memory, check MongoDB (in case of Render redeploy)
+        try:
+            link_data = declaration_links_collection.find_one({"token": token})
+            if link_data:
+                declaration_links[token] = link_data  # Cache in memory
+        except:
+            pass
+
+    if link_data:
         client_email = link_data.get("client_email", "")
 
         html = """
