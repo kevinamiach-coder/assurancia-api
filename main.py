@@ -123,7 +123,9 @@ if not MONGODB_URI:
 
 # serverSelectionTimeoutMS keeps the app responsive if Mongo is unreachable
 # instead of hanging for ~30s on every request.
-mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+# tlsInsecure=True works around SSL/TLS handshake failures seen on Render
+# when connecting to MongoDB Atlas.
+mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000, tlsInsecure=True)
 db = mongo_client["assurancia"]
 declaration_links_collection = db["declaration_links"]
 claims_collection = db["claims"]
