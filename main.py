@@ -219,6 +219,31 @@ async def load_declaration_links_from_mongodb():
         logger.warning(f"⚠️  Could not load declaration links from MongoDB: {e!r}")
 
 
+# ========== STARTUP: Create demo users if collection is empty ==========
+@app.on_event("startup")
+async def init_demo_users():
+    """Auto-create demo users in MongoDB on startup if the collection is empty."""
+    from auth import hash_password
+
+    try:
+        users_collection = db["demo_users"]
+
+        # Si collection vide, ajoute les users
+        if users_collection.count_documents({}) == 0:
+            demo_users = [
+                {"username": "kevin", "password_hash": hash_password("password123"), "insurer_id": "INSURER_TEST_001"},
+                {"username": "demo", "password_hash": hash_password("demo123"), "insurer_id": "DEMO_INSURER"},
+                {"username": "assurance", "password_hash": hash_password("pass456"), "insurer_id": "INSURER_TEST_002"}
+            ]
+            users_collection.insert_many(demo_users)
+            logger.info(f"✅ Created {len(demo_users)} demo users on startup")
+        else:
+            count = users_collection.count_documents({})
+            logger.info(f"✅ Demo users already exist ({count} users)")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not initialize demo users: {e}")
+
+
 # ----------------------------------------------------------------------------
 # Models
 # ----------------------------------------------------------------------------

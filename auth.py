@@ -31,8 +31,55 @@ def validate_jwt_secret():
     logger.info("✅ JWT_SECRET validated (%d characters)", len(jwt_secret))
 
 
+def get_demo_users_from_db() -> dict:
+    """Load demo users from MongoDB (collection: demo_users in the 'assurancia' db).
+
+    This is the primary, robust source for credentials. It avoids the fragility of
+    parsing the DEMO_USERS environment variable (which is easy to misconfigure and
+    has been unreliable on the hosting platform).
+
+    Returns an empty dict if MongoDB is unreachable or has no users, so callers can
+    safely fall back to the DEMO_USERS env var.
+    """
+    mongo_uri = os.getenv("MONGODB_URI", "").strip()
+    if not mongo_uri:
+        return {}
+
+    try:
+        from pymongo import MongoClient
+
+        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        db = client["assurancia"]
+        users_collection = db["demo_users"]
+
+        users = {}
+        for user_doc in users_collection.find({}):
+            username = user_doc.get("username")
+            if username:
+                users[username] = {
+                    "password_hash": user_doc.get("password_hash", ""),
+                    "insurer_id": user_doc.get("insurer_id", "UNKNOWN"),
+                }
+        return users
+    except Exception as e:
+        logger.warning("⚠️ Could not load demo users from MongoDB: %s", e)
+        return {}
+
+
 def load_demo_users() -> dict:
-    """Load demo users from DEMO_USERS environment variable (JSON format)."""
+    """Load demo users.
+
+    Order of precedence:
+      1. MongoDB collection 'demo_users' (robust, primary source)
+      2. DEMO_USERS environment variable (JSON, legacy fallback)
+    """
+    # 1. Try MongoDB first (primary source)
+    db_users = get_demo_users_from_db()
+    if db_users:
+        logger.info("✅ Loaded %d demo user(s) from MongoDB", len(db_users))
+        return db_users
+
+    # 2. Fallback: DEMO_USERS environment variable (legacy)
     demo_users_json = os.getenv("DEMO_USERS", "").strip()
 
     if not demo_users_json:
